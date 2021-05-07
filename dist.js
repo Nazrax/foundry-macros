@@ -7,6 +7,7 @@ let showPathLines = true;
 let showNumericMovementCost = true;
 let weaponRange = 25;
 let rangeColor = 0xffa500; // orange
+let rangeAlpha = 0.3;
 let lineWidth = 5;
 let MAX_DIST = 999; 
 let FEET_PER_TILE = 5;
@@ -258,7 +259,7 @@ function drawMovementCosts(tileMap) {
 
 function drawRanges(targetSet) {
   window.rangeTiles = new PIXI.Graphics();
-  window.rangeTiles.beginFill(rangeColor, 0.3);
+  window.rangeTiles.beginFill(rangeColor, rangeAlpha);
   for (const tileSet of targetSet) {
     for (const tile of tileSet) {
       let cornerPt = tile.pt;
@@ -274,8 +275,9 @@ function drawHighlights(movementTileMap, targetSet) {
   window.highlightTiles = new PIXI.Graphics();
 
   const rangeMap = new Map();
-  for (const tileMap of targetSet) {
-    for (const tileKey of tileMap.keys()) {
+  for (const tileSet of targetSet) {
+    for (const tile of tileSet) {
+      const tileKey = tile.key;
       let count = rangeMap.get(tileKey)
       if (count === undefined) {
         count = 0;
@@ -285,11 +287,11 @@ function drawHighlights(movementTileMap, targetSet) {
     }
   }
 
-  for (const movementSquare of movementTileMap) {
-    if (rangeMap.get(movementSquare.key) === targetSet.size) { // Every target is reachable from here
-      const color = colorByActions[Math.floor(Math.floor(movementSquare.distance-1+FUDGE)/tilesPerAction)];
+  for (const tile of movementTileMap.values()) {
+    if (rangeMap.get(tile.key) === targetSet.size) { // Every target is reachable from here
+      const color = colorByActions[Math.floor(Math.floor(tile.distance-1+FUDGE)/tilesPerAction)];
       window.highlightTiles.lineStyle(lineWidth, color);
-      window.highlightTiles.drawRect(movementSquare.pt.x, movementSquare.pt.y, canvas.grid.size, canvas.grid.size);
+      window.highlightTiles.drawRect(tile.pt.x, tile.pt.y, canvas.grid.size, canvas.grid.size);
     }
   }
   canvas.drawings.addChild(window.highlightTiles);
