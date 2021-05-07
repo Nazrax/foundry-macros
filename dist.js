@@ -1,18 +1,26 @@
-// TODO Use const once dev is done
-let actionsToShow = 2;
-let colorByActions = [0x00ff00, 0xffff00, 0xff0000]; // green, yellow, red
-let movementAlpha = 0.3;
-let showDifficultTerrain = true;
-let showPathLines = true;
-let showNumericMovementCost = true;
-let weaponRange = 25;
-let rangeColor = 0xffa500; // orange
-let rangeAlpha = 0.3;
-let lineWidth = 5;
-let MAX_DIST = 999; 
-let FEET_PER_TILE = 5;
-let FUDGE = .1; // floating point fudge
+// Main choices
+const actionsToShow = 2;
+const weaponRange = 30;
+const showDifficultTerrain = false;
+const showPathLines = false;
+const showNumericMovementCost = false;
+const fontSize = 20;
 
+// Colors and widths
+const colorByActions = [0x00ff00, 0xffff00, 0xff0000]; // green, yellow, red
+const pathLineColor = 0x0000ff; // blue
+const highlightLineColor = 0xffffff; // white
+const pathLineWidth = 1;
+const highlightLineWidth = 3;
+const movementAlpha = 0.4; // 0 is completely transparent, 1 is completely opaque
+
+// Don't mess with these
+const MAX_DIST = 999;
+const FEET_PER_TILE = 5;
+const FUDGE = .1; // floating point fudge
+
+//const rangeColor = 0xffa500; // orange
+//const rangeAlpha = 0.3;
 class GridTile {
   constructor(gx, gy) {
     this.gx = gx;
@@ -20,6 +28,7 @@ class GridTile {
     this.distance = MAX_DIST;
     this.visited = false;
     this.upstreams = undefined;
+    this._upstreamCache = undefined;
   }
 
   static fromPixels(x, y) {
@@ -44,19 +53,38 @@ class GridTile {
   get cost() {
     return canvas.terrain.cost({x: this.gy, y: this.gx});
   }
+
+  get allUpstreams() {
+    if (this._upstreamCache === undefined) {
+      this._upstreamCache = new Map();
+      if (this.upstreams !== undefined) {
+        for (const upstream of this.upstreams) {
+          this._upstreamCache.set(upstream.key, upstream);
+          for (const upstream2 of upstream.allUpstreams.values()) {
+            this._upstreamCache.set(upstream2.key, upstream2);
+          }
+        }
+      }
+    }
+    return this._upstreamCache;
+  }
+
+  upstreamOf(tile) {
+    return tile.allUpstreams.has(this.key);
+  }
 }
 
 function currentToken() {
- // noinspection JSUnresolvedVariable
-  return canvas.tokens.controlled[0];
+  return token;
 }
 
 function getSpeed() {
-  const speedAttr = currentToken().actor.data.data.attributes.speed;
-  let speed = speedAttr.total;
+  const actor = currentToken() !== undefined ? currentToken().actor : game.user.character;
+  const speedAttr = actor.data.data.attributes.speed;
+  let speed = speedAttr.total ?? 0;
   // noinspection JSUnresolvedVariable
   speedAttr.otherSpeeds.forEach(otherSpeed => {
-    if (otherSpeed.name === "Fly Speed" && otherSpeed.total > speed) {
+    if (otherSpeed.total > speed) {
       speed = otherSpeed.total;
     }
   })
@@ -137,7 +165,7 @@ function calculateMovementCosts() {
   return new Map([...tileMap].filter(kv => kv[1].distance !== MAX_DIST && kv[1].distance > FUDGE));
 }
 
-function calculateTargetRanges() {
+function calculateTargetRangeSet() {
   const targetSet = new Set();
   const weaponRangeInTiles = weaponRange / FEET_PER_TILE;
 
@@ -210,72 +238,9 @@ function calculateTargetRanges() {
   return targetSet;
 }
 
-function drawMovementCosts(tileMap) {
-  const movementSpeed = getSpeed() / 5;
-  window.distTexts = [];
-  window.distTiles = new PIXI.Graphics();
-  window.distLines = new PIXI.Graphics();
-  window.distLines.lineStyle(2, 0x0000ff);
-
-  for (const tile of tileMap.values()) {
-    // Annotate distance
-    if (showNumericMovementCost) {
-      const text = new PIXI.Text(tile.distance, {fontFamily: 'Arial', fontSize: 16, fill: 0x0000ff});
-      const pt = tile.pt;
-      text.position.x = pt.x;
-      text.position.y = pt.y;
-      window.distTexts.push(text);
-    }
-
-    // Annotate upstream
-    if (showPathLines) {
-      let squareCenter = tile.centerPt;
-      if (tile.upstreams !== undefined) {
-        for (const upstream of tile.upstreams) {
-          let upstreamCenter = upstream.centerPt;
-          window.distLines.moveTo(squareCenter.x, squareCenter.y);
-          window.distLines.lineTo(upstreamCenter.x, upstreamCenter.y);
-        }
-      }
-    }
-
-    // Color tile
-    let color = colorByActions[Math.floor(Math.floor(tile.distance-1+FUDGE)/movementSpeed)];
-    let cornerPt = tile.pt;
-    window.distTiles.beginFill(color, movementAlpha);
-    window.distTiles.drawRect(cornerPt.x, cornerPt.y, canvas.grid.size, canvas.grid.size);
-    window.distTiles.endFill();
-  }
-
-  for (const text of window.distTexts) {
-    canvas.drawings.addChild(text);
-  }
-  canvas.drawings.addChild(window.distTiles);
-  canvas.drawings.addChild(window.distLines);
-  if (showDifficultTerrain) {
-    canvas.terrain.visible = true;
-  }
-}
-
-function drawRanges(targetSet) {
-  window.rangeTiles = new PIXI.Graphics();
-  window.rangeTiles.beginFill(rangeColor, rangeAlpha);
-  for (const tileSet of targetSet) {
-    for (const tile of tileSet) {
-      let cornerPt = tile.pt;
-      window.rangeTiles.drawRect(cornerPt.x, cornerPt.y, canvas.grid.size, canvas.grid.size);
-    }
-  }
-  window.rangeTiles.endFill(); 
-  canvas.drawings.addChild(window.rangeTiles);
-}
-
-function drawHighlights(movementTileMap, targetSet) {
-  const tilesPerAction = getSpeed() / 5;
-  window.highlightTiles = new PIXI.Graphics();
-
+function buildRangeMap(targetSet) {
   const rangeMap = new Map();
-  for (const tileSet of targetSet) {
+  for (const tileSet of targetSet.values()) {
     for (const tile of tileSet) {
       const tileKey = tile.key;
       let count = rangeMap.get(tileKey)
@@ -286,50 +251,113 @@ function drawHighlights(movementTileMap, targetSet) {
       rangeMap.set(tileKey, count);
     }
   }
-
-  for (const tile of movementTileMap.values()) {
-    if (rangeMap.get(tile.key) === targetSet.size) { // Every target is reachable from here
-      const color = colorByActions[Math.floor(Math.floor(tile.distance-1+FUDGE)/tilesPerAction)];
-      window.highlightTiles.lineStyle(lineWidth, color);
-      window.highlightTiles.drawRect(tile.pt.x, tile.pt.y, canvas.grid.size, canvas.grid.size);
-    }
-  }
-  canvas.drawings.addChild(window.highlightTiles);
+  return rangeMap;
 }
 
-function clearCosts() {
-  window.distTexts.forEach(t => {t.destroy()});
-  window.distTexts = [];
-  window.distLines.destroy();
-  window.distTiles.destroy();
+function calculateIdealTileMap(movementTileMap, targetSet, rangeMap) {
+  const idealTileMap = new Map();
+  for (const tile of movementTileMap.values()) {
+    if (rangeMap.get(tile.key) === targetSet.size) { // Every target is reachable from here
+      idealTileMap.set(tile.key, tile);
+    }
+  }
+  return idealTileMap;
+}
+
+function drawCosts(tileMap, targetSet) {
+  const rangeMap = buildRangeMap(targetSet);
+  const idealTileMap = calculateIdealTileMap(tileMap, targetSet, rangeMap);
+  if (targetSet.size > 0 && idealTileMap.size === 0) {
+    ui.notifications.warn("No tiles are within movement range AND attack range")
+    return;
+  }
+
+  const movementSpeed = getSpeed() / 5;
+  window.distanceTexts = [];
+  window.distanceOverlay = new PIXI.Graphics();
+  window.pathOverlay = new PIXI.Graphics();
+  window.pathOverlay.lineStyle(pathLineWidth, pathLineColor);
+
+  // Set line for paths
+  for (const tile of tileMap.values()) {
+    let drawTile = false;
+    if (targetSet.size === 0 || idealTileMap.has(tile.key)) {
+      drawTile = true;
+    } else {
+      for (const idealTile of idealTileMap.values()) {
+        if (tile.upstreamOf(idealTile)) {
+          drawTile = true;
+          break;
+        }
+      }
+    }
+    if (drawTile) {
+      // Annotate distance
+      if (showNumericMovementCost) {
+        const text = new PIXI.Text(tile.distance, {fontFamily: 'Arial', fontSize: fontSize, fill: pathLineColor});
+        const pt = tile.pt;
+        text.position.x = pt.x;
+        text.position.y = pt.y;
+        window.distanceTexts.push(text);
+      }
+
+      // Annotate upstream
+      if (showPathLines) {
+        let squareCenter = tile.centerPt;
+        if (tile.upstreams !== undefined) {
+          for (const upstream of tile.upstreams) {
+            let upstreamCenter = upstream.centerPt;
+            window.pathOverlay.moveTo(squareCenter.x, squareCenter.y);
+            window.pathOverlay.lineTo(upstreamCenter.x, upstreamCenter.y);
+          }
+        }
+      }
+
+      // Color tile based on movement
+      let color = colorByActions[Math.floor(Math.floor(tile.distance - 1 + FUDGE) / movementSpeed)];
+      let cornerPt = tile.pt;
+      if (idealTileMap.has(tile.key)) {
+        //window.distanceOverlay.lineStyle(highlightLineWidth, color);
+        window.distanceOverlay.lineStyle(highlightLineWidth, highlightLineColor);
+      } else {
+        window.distanceOverlay.lineStyle(0, 0);
+      }
+      window.distanceOverlay.beginFill(color, movementAlpha);
+      window.distanceOverlay.drawRect(cornerPt.x, cornerPt.y, canvas.grid.size, canvas.grid.size);
+      window.distanceOverlay.endFill();
+    }
+  }
+
+  canvas.drawings.addChild(window.distanceOverlay);
+  canvas.drawings.addChild(window.pathOverlay);
+
+  for (const text of window.distanceTexts) {
+    canvas.drawings.addChild(text);
+  }
+
+  if (showDifficultTerrain) {
+    canvas.terrain.visible = true;
+  }
+}
+
+function clearAll() {
+  window.distanceTexts.forEach(t => {t.destroy()});
+  window.distanceTexts = [];
+  window.distanceOverlay.destroy();
+  window.distanceOverlay = undefined;
+  window.pathOverlay.destroy();
+  window.pathOverlay = undefined;
+
   if (showDifficultTerrain) {
     canvas.terrain.visible = false;
   }
-  window.distTiles = undefined;
-  window.distLines = undefined;
 }
 
-function clearRanges() {
-  window.rangeTiles.destroy();
-  window.rangeTiles = undefined;
-}
-
-function clearHighlights() {
-  window.highlightTiles.destroy();
-  window.highlightTiles = undefined;
-}
-
-if (typeof(window.distTiles) == "undefined") {
-  console.log("Showing distances")
+if (typeof(window.distanceOverlay) == "undefined") {
   const movementSquares = calculateMovementCosts();
-  const rangeSquares = calculateTargetRanges();
+  const targetSet = calculateTargetRangeSet();
 
-  drawMovementCosts(movementSquares);
-  drawRanges(rangeSquares);
-  drawHighlights(movementSquares, rangeSquares);
+  drawCosts(movementSquares, targetSet);
 } else {
-  console.log("Hiding distances")
-  clearCosts();
-  clearRanges();
-  clearHighlights();
+  clearAll();
 }
