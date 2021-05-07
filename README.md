@@ -1,1 +1,1 @@
-[Imgur Slideshow](https://imgur.com/a/flvmKSq)
+[Movement Costs slideshow](https://imgur.com/a/flvmKSq)
