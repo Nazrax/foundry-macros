@@ -1,10 +1,10 @@
 // Main choices
 const actionsToShow = 2;
 const weaponRange = 30;
-const showDifficultTerrain = true;
-const showPathLines = true;
-const showNumericMovementCost = true;
-const fontSize = 20;
+const showDifficultTerrain = false;
+const showPathLines = false;
+const showNumericMovementCost = false;
+const showTurnOrder = true;
 
 // Colors and widths
 const colorByActions = [0x00ff00, 0xffff00, 0xff0000]; // green, yellow, red
@@ -13,6 +13,22 @@ const highlightLineColor = 0xffffff; // white
 const pathLineWidth = 1;
 const highlightLineWidth = 3;
 const movementAlpha = 0.3; // 0 is completely transparent, 1 is completely opaque
+
+const movementCostStyle = {
+  fontFamily: 'Arial',
+  fontSize: 20,
+  fill: 0x0000ff, // blue
+  stroke: 0x000000, // white
+  strokeThickness: 1
+};
+
+const turnOrderStyle = {
+  fontFamily: 'Arial',
+  fontSize: 50,
+  fill: 0xffffff, // white
+  stroke: 0x000000, // black
+  strokeThickness: 1
+};
 
 // Don't mess with these
 const MAX_DIST = 999;
@@ -288,9 +304,9 @@ function calculatePotentialTargetMap(movementTileMap) {
   const tokenCenterPoint = {x: currentToken.x + currentToken.hitArea.x/2, y: currentToken.y + currentToken.hitArea.y/2};
 
   for (const combatant of game.combat.combatants) {
-    if (combatant.actor.data.type === "npc") { // TODO Get a better check
-      // noinspection JSUnresolvedFunction
-      const combatantToken = canvas.tokens.get(combatant.tokenId); // For some reason the combatant just has the data structure, not the Token
+    // noinspection JSUnresolvedFunction
+    const combatantToken = canvas.tokens.get(combatant.tokenId); // For some reason the combatant just has the data structure, not the Token
+    if (!combatantToken.actor.hasPlayerOwner && combatantToken.data.disposition == -1) { // Hostile NPC
       const combatantCenterPoint = {
         x: combatantToken.x + combatantToken.hitArea.x/2,
         y: combatantToken.y + combatantToken.hitArea.y/2
@@ -298,6 +314,59 @@ function calculatePotentialTargetMap(movementTileMap) {
       const ray = new Ray(combatantCenterPoint, tokenCenterPoint)
       // TODO Finish this
     }
+  }
+}
+
+// Copied straight from foundry.js (_sortCombatants)
+function combatantComparator(a, b) {
+    const ia = Number.isNumeric(a.initiative) ? a.initiative : -9999;
+    const ib = Number.isNumeric(b.initiative) ? b.initiative : -9999;
+    let ci = ib - ia;
+    if ( ci !== 0 ) return ci;
+    let [an, bn] = [a.token?.name || "", b.token?.name || ""];
+    let cn = an.localeCompare(bn);
+    if ( cn !== 0 ) return cn;
+    return a.tokenId - b.tokenId;
+}
+
+function drawTurnOrder() {
+  const currentToken = getCurrentToken();
+  const currentTokenId = currentToken.id;
+  const sortedCombatants = game.combat.combatants.sort(combatantComparator)
+  let seenCurrent = false;
+  let turnOrder = 0;
+  let i=0;
+  let j=0;
+
+  while(i < sortedCombatants.length) {
+    if (j++ > sortedCombatants.length * 3) {
+      throw "Got into an infinite loop in drawTurnOrder"
+    }
+
+    const combatant = sortedCombatants[i];
+    const combatantTokenId = combatant.token._id
+    // noinspection JSUnresolvedFunction
+    const combatantToken = canvas.tokens.get(combatantTokenId);
+    if (!seenCurrent && combatantTokenId === currentTokenId) {
+      seenCurrent = true;
+    }
+    if (!seenCurrent) {
+      sortedCombatants.push(sortedCombatants.shift()); // Move first element to last element
+    } else {
+      const isVisible = true; // TODO Figure out how to calculate this
+      if (turnOrder > 0 && isVisible) {
+        const text = new PIXI.Text(turnOrder, turnOrderStyle);
+        text.position.x = combatantToken.x + combatantToken.hitArea.width / 2 - text.width / 2;
+        text.position.y = combatantToken.y + combatantToken.hitArea.height / 2 - text.height / 2;
+        window.turnOrderTexts.push(text);
+      }
+      turnOrder++
+      i++;
+    }
+  }
+
+  for (const text of window.turnOrderTexts) {
+    canvas.tokens.addChild(text);
   }
 }
 
@@ -312,8 +381,6 @@ function drawCosts(movementCostMap, targetRangeSet) {
 
   const tilesMovedPerAction = getSpeed() / FEET_PER_TILE;
   window.distanceTexts = [];
-  window.distanceOverlay = new PIXI.Graphics();
-  window.pathOverlay = new PIXI.Graphics();
   window.pathOverlay.lineStyle(pathLineWidth, pathLineColor);
 
   for (const tile of movementCostMap.values()) {
@@ -331,7 +398,7 @@ function drawCosts(movementCostMap, targetRangeSet) {
     if (drawTile) {
       // Annotate distance
       if (showNumericMovementCost) {
-        const text = new PIXI.Text(tile.distance, {fontFamily: 'Arial', fontSize: fontSize, fill: pathLineColor});
+        const text = new PIXI.Text(tile.distance, movementCostStyle);
         const pt = tile.pt;
         text.position.x = pt.x;
         text.position.y = pt.y;
@@ -354,7 +421,6 @@ function drawCosts(movementCostMap, targetRangeSet) {
       let color = colorByActions[Math.floor(Math.floor(tile.distance - 1 + FUDGE) / tilesMovedPerAction)];
       let cornerPt = tile.pt;
       if (idealTileMap.has(tile.key)) {
-        //window.distanceOverlay.lineStyle(highlightLineWidth, color);
         window.distanceOverlay.lineStyle(highlightLineWidth, highlightLineColor);
       } else {
         window.distanceOverlay.lineStyle(0, 0);
@@ -379,22 +445,36 @@ function drawCosts(movementCostMap, targetRangeSet) {
 
 function clearAll() {
   window.distanceTexts.forEach(t => {t.destroy()});
+  window.turnOrderTexts.forEach(t => {t.destroy()});
   window.distanceTexts = [];
   window.distanceOverlay.destroy();
   window.distanceOverlay = undefined;
   window.pathOverlay.destroy();
   window.pathOverlay = undefined;
+  window.turnOrderTexts = [];
 
   if (showDifficultTerrain) {
     canvas.terrain.visible = false;
   }
 }
 
+function initializePersistentVariables() {
+  window.distanceTexts = [];
+  window.turnOrderTexts = [];
+
+  window.distanceOverlay = new PIXI.Graphics();
+  window.pathOverlay = new PIXI.Graphics();
+}
+
 if (typeof(window.distanceOverlay) === "undefined") {
   const movementCosts = calculateMovementCosts();
   const targetRangeSet = calculateTargetRangeSet();
 
+  initializePersistentVariables();
   drawCosts(movementCosts, targetRangeSet);
+  if (showTurnOrder) {
+    drawTurnOrder();
+  }
 } else {
   clearAll();
 }
