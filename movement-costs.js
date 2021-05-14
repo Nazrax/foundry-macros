@@ -1,9 +1,9 @@
 // Main choices
 const actionsToShow = 2;
 const weaponRange = 30;
-const showDifficultTerrain = false;
-const showPathLines = false;
-const showNumericMovementCost = false;
+const showDifficultTerrain = true;
+const showPathLines = true;
+const showNumericMovementCost = true;
 const fontSize = 20;
 
 // Colors and widths
@@ -12,15 +12,13 @@ const pathLineColor = 0x0000ff; // blue
 const highlightLineColor = 0xffffff; // white
 const pathLineWidth = 1;
 const highlightLineWidth = 3;
-const movementAlpha = 0.4; // 0 is completely transparent, 1 is completely opaque
+const movementAlpha = 0.3; // 0 is completely transparent, 1 is completely opaque
 
 // Don't mess with these
 const MAX_DIST = 999;
 const FEET_PER_TILE = 5;
 const FUDGE = .1; // floating point fudge
 
-//const rangeColor = 0xffa500; // orange
-//const rangeAlpha = 0.3;
 class GridTile {
   constructor(gx, gy) {
     this.gx = gx;
@@ -72,14 +70,20 @@ class GridTile {
   upstreamOf(tile) {
     return tile.allUpstreams.has(this.key);
   }
+
+  isDiagonal(neighbor) {
+    return this.gx !== neighbor.gx && this.gy !== neighbor.gy;
+  }
 }
 
-function currentToken() {
+// TODO Use non-macro method
+function getCurrentToken() {
+  // noinspection JSUnresolvedVariable
   return token;
 }
 
 function getSpeed() {
-  const actor = currentToken() !== undefined ? currentToken().actor : game.user.character;
+  const actor = getCurrentToken() !== undefined ? getCurrentToken().actor : game.user.character;
   const speedAttr = actor.data.data.attributes.speed;
   let speed = speedAttr.total ?? 0;
   // noinspection JSUnresolvedVariable
@@ -97,13 +101,14 @@ function calculateGridDistance(pt1, pt2) {
   return Math.abs(dx - dy) + Math.floor(Math.min(dx, dy) * 3 / 2);
 }
 
+// Use Dijkstra's shortest path algorithm
 function calculateMovementCosts() {
   const tilesPerAction = getSpeed() / FEET_PER_TILE;
   const maxTiles = tilesPerAction * actionsToShow;
 
-  const tokenTile = GridTile.fromPixels(currentToken().x, currentToken().y);
+  const currentToken = getCurrentToken();
+  const tokenTile = GridTile.fromPixels(currentToken.x, currentToken.y);
   tokenTile.distance = 0;
-  tokenTile.visited = true;
 
   // Keep a map of grid coordinate -> GridTile
   const tileMap = new Map();
@@ -120,10 +125,14 @@ function calculateMovementCosts() {
         current = tile;
       }
     }
-    if (current.distance === MAX_DIST) {
+    if (current.distance === MAX_DIST) { // Stop if cheapest tile is unreachable
       break;
     }
     toVisit.delete(current);
+    if (current.visited) {
+      console.log("BUG: Trying to visit a tile twice");
+      continue;
+    }
     current.visited = true;
 
     const neighborGridXYs = canvas.grid.grid.getNeighbors(current.gx, current.gy);
@@ -135,29 +144,31 @@ function calculateMovementCosts() {
         tileMap.set(neighbor.key, neighbor);
       }
 
-      const ray = new Ray(neighbor.centerPt, current.centerPt);
       if (neighbor.visited) {
         continue;
-      } else if (canvas.walls.checkCollision(ray, {blockMovement: true, blockSenses: false, mode: 'any'})) {
+      }
+
+      const ray = new Ray(neighbor.centerPt, current.centerPt);
+      if (checkCollision(ray, {blockMovement: true, blockSenses: false, mode: 'any'})) {
         // Blocked, do nothing
         //console.log(`${neighbor.key} (${neighbor.centerPt.x}/${neighbor.centerPt.y}) is blocked from ${current.key} (${current.centerPt.x}/${current.centerPt.y})`);
       } else {
         let newDistance = current.distance + neighbor.cost;
-        if (current.gx !== neighbor.gx && current.gy !== neighbor.gy) { // diagonals
+        if (current.isDiagonal(neighbor)) { // diagonals
           newDistance += .5;
         }
 
         if (Math.floor(newDistance+FUDGE) > maxTiles) {
-          continue; // Don't add the neighbor to toVisit
-        } else if (Math.abs(neighbor.distance - newDistance) < .1) { // floating point equality
+          // Do nothing
+        } else if (Math.abs(neighbor.distance - newDistance) < FUDGE) {
           neighbor.upstreams.add(current);
         } else if (newDistance < neighbor.distance) {
           neighbor.upstreams = new Set();
           neighbor.upstreams.add(current);
           neighbor.distance = newDistance;
+          toVisit.add(neighbor);
         }
       }
-      toVisit.add(neighbor);
     }
   }
 
@@ -165,75 +176,85 @@ function calculateMovementCosts() {
   return new Map([...tileMap].filter(kv => kv[1].distance !== MAX_DIST && kv[1].distance > FUDGE));
 }
 
-function calculateTargetRangeSet() {
-  const targetSet = new Set();
-  const weaponRangeInTiles = weaponRange / FEET_PER_TILE;
+// Abstract this because IntelliJ complains that canvas.walls.checkCollision isn't accessible and we don't want to annotate it everywhere
+function checkCollision(ray, opts) {
+  // noinspection JSUnresolvedFunction
+  return canvas.walls.checkCollision(ray, opts);
+}
 
-  for (const target of game.user.targets) {
-    const tileSet = new Set();
-    const targetTile = GridTile.fromPixels(target.x, target.y);
-    const tgx = targetTile.gx;
-    const tgy = targetTile.gy;
-    const tgh = Math.floor(target.hitArea.height / canvas.grid.size);
-    const tgw = Math.floor(target.hitArea.width / canvas.grid.size);
-    const targetCornerPts = [
-      [target.x, target.y],
-      [target.x + target.hitArea.width, target.y],
-      [target.x, target.y + target.hitArea.height],
-      [target.x + target.hitArea.width, target.y + target.hitArea.height],
-      [target.x + target.hitArea.width/2, target.y + target.hitArea.height/2]
-    ];
+function calculateTilesInRange(rangeInTiles, targetTile) {
+  const tileSet = new Set();
+  const targetGridX = targetTile.gx;
+  const targetGridY = targetTile.gy;
+  const targetGridHeight = Math.floor(target.hitArea.height / canvas.grid.size);
+  const targetGridWidth = Math.floor(target.hitArea.width / canvas.grid.size);
+  const targetTestPoints = [
+    [target.x, target.y],
+    [target.x + target.hitArea.width, target.y],
+    [target.x, target.y + target.hitArea.height],
+    [target.x + target.hitArea.width, target.y + target.hitArea.height],
+    [target.x + target.hitArea.width/2, target.y + target.hitArea.height/2]
+  ];
 
-    for(let dgx=0; dgx <= weaponRangeInTiles; dgx++) {
-      for(let dgy=0; dgy <= weaponRangeInTiles; dgy++) {
-        if (dgx === 0 && dgy === 0) {
-          continue;
-        }
+  // Loop over X and Y deltas, computing distance for only a single quadrant
+  for(let gridXDelta = 0; gridXDelta <= rangeInTiles; gridXDelta++) {
+    for(let gridYDelta = 0; gridYDelta <= rangeInTiles; gridYDelta++) {
+      if (gridXDelta === 0 && gridYDelta === 0) {
+        continue;
+      }
 
-        const shotDistance = calculateGridDistance({x: 0, y: 0}, {x: dgx, y: dgy});
-        if (shotDistance < weaponRangeInTiles + .1) { // Close enough
-          const gxSet = new Set();
-          const gySet = new Set();
-          gxSet.add(tgx + dgx + tgw - 1);
-          gxSet.add(tgx - dgx);
-          gySet.add(tgy + dgy + tgh - 1);
-          gySet.add(tgy - dgy);
-          for (const sgx of gxSet) {
-            for (const sgy of gySet) {
-              const farSquare = new GridTile(sgx, sgy);
-              const fPt = farSquare.pt;
-              const farCornerPts = [
-                //[fPt.x, fPt.y],
-                //[fPt.x + canvas.grid.size, fPt.y],
-                //[fPt.x, fPt.y + canvas.grid.size],
-                //[fPt.x + canvas.grid.size, fPt.y + canvas.grid.size],
-                [fPt.x + canvas.grid.size/2, fPt.y + canvas.grid.size/2]
-              ];
+      const shotDistance = calculateGridDistance({x: 0, y: 0}, {x: gridXDelta, y: gridYDelta});
+      if (shotDistance < rangeInTiles + FUDGE) { // We're within range
+        // We need to test visibily for all 4 quadrants
+        // Use sets so we don't have to explicitly test for "on the same row/column as"
+        const gridXSet = new Set();
+        const gridYSet = new Set();
+        gridXSet.add(targetGridX + gridXDelta + targetGridWidth - 1);
+        gridXSet.add(targetGridX - gridXDelta);
+        gridYSet.add(targetGridY + gridYDelta + targetGridHeight - 1);
+        gridYSet.add(targetGridY - gridYDelta);
+        for (const testGridX of gridXSet) {
+          for (const testGridY of gridYSet) {
+            const testTile = new GridTile(testGridX, testGridY);
+            const testTilePoint = testTile.pt;
+            // It turns out that, since walls can run through the middle of tiles, testing all 5 points ends up giving weird results
+            const testTilePoints = [
+              //[fPt.x, fPt.y],
+              //[fPt.x + canvas.grid.size, fPt.y],
+              //[fPt.x, fPt.y + canvas.grid.size],
+              //[fPt.x + canvas.grid.size, fPt.y + canvas.grid.size],
+              [testTilePoint.x + canvas.grid.size/2, testTilePoint.y + canvas.grid.size/2]
+            ];
 
-              let clearShot = false;
-              for (const farCornerPt of farCornerPts) {
-                for (const targetCornerPt of targetCornerPts) {
-                  const ray = new Ray({x: farCornerPt[0], y: farCornerPt[1]}, {x: targetCornerPt[0], y: targetCornerPt[1]});
-                  // noinspection JSUnresolvedFunction
-                  if (!canvas.walls.checkCollision(ray, {blockMovement: false, blockSenses: true, mode: 'any'})) {
-                    clearShot = true;
-                    break;
-                  }
+            let clearShot = false;
+            for (const testTilePoint of testTilePoints) {
+              for (const targetTestPoint of targetTestPoints) {
+                const ray = new Ray({x: testTilePoint[0], y: testTilePoint[1]}, {x: targetTestPoint[0], y: targetTestPoint[1]});
+                if (!checkCollision(ray, {blockMovement: false, blockSenses: true, mode: 'any'})) {
+                  clearShot = true;
+                  break;
                 }
               }
-              /*
-              const ray = new Ray(farSquare.centerPt, target.center)
-              const clearShot = !canvas.walls.checkCollision(ray, {blockMovement: false, blockSenses: true, mode: 'any'});
-              */
-              if (clearShot) {
-                tileSet.add(farSquare);
-              }
+            }
+
+            if (clearShot) {
+              tileSet.add(testTile);
             }
           }
         }
       }
     }
-    targetSet.add(tileSet);
+  }
+  return tileSet;
+}
+
+function calculateTargetRangeSet() {
+  const targetSet = new Set();
+  const weaponRangeInTiles = weaponRange / FEET_PER_TILE;
+
+  for (const target of game.user.targets) {
+    const targetTile = GridTile.fromPixels(target.x, target.y);
+    targetSet.add(calculateTilesInRange(weaponRangeInTiles, targetTile));
   }
   return targetSet;
 }
@@ -243,10 +264,7 @@ function buildRangeMap(targetSet) {
   for (const tileSet of targetSet.values()) {
     for (const tile of tileSet) {
       const tileKey = tile.key;
-      let count = rangeMap.get(tileKey)
-      if (count === undefined) {
-        count = 0;
-      }
+      let count = rangeMap.get(tileKey) ?? 0;
       count++;
       rangeMap.set(tileKey, count);
     }
@@ -264,24 +282,43 @@ function calculateIdealTileMap(movementTileMap, targetSet, rangeMap) {
   return idealTileMap;
 }
 
-function drawCosts(tileMap, targetSet) {
-  const rangeMap = buildRangeMap(targetSet);
-  const idealTileMap = calculateIdealTileMap(tileMap, targetSet, rangeMap);
-  if (targetSet.size > 0 && idealTileMap.size === 0) {
+// game.combat.combatants[0].initiative
+function calculatePotentialTargetMap(movementTileMap) {
+  const currentToken = getCurrentToken();
+  const tokenCenterPoint = {x: currentToken.x + currentToken.hitArea.x/2, y: currentToken.y + currentToken.hitArea.y/2};
+
+  for (const combatant of game.combat.combatants) {
+    if (combatant.actor.data.type === "npc") { // TODO Get a better check
+      // noinspection JSUnresolvedFunction
+      const combatantToken = canvas.tokens.get(combatant.tokenId); // For some reason the combatant just has the data structure, not the Token
+      const combatantCenterPoint = {
+        x: combatantToken.x + combatantToken.hitArea.x/2,
+        y: combatantToken.y + combatantToken.hitArea.y/2
+      };
+      const ray = new Ray(combatantCenterPoint, tokenCenterPoint)
+      // TODO Finish this
+    }
+  }
+}
+
+function drawCosts(movementCostMap, targetRangeSet) {
+  const rangeMap = buildRangeMap(targetRangeSet);
+  const idealTileMap = calculateIdealTileMap(movementCostMap, targetRangeSet, rangeMap);
+  if (targetRangeSet.size > 0 && idealTileMap.size === 0) {
     ui.notifications.warn("No tiles are within movement range AND attack range")
     return;
   }
+  const potentialTargetMap = idealTileMap.size === 0 ? calculatePotentialTargetMap(movementCostMap) : new Map();
 
-  const movementSpeed = getSpeed() / 5;
+  const tilesMovedPerAction = getSpeed() / FEET_PER_TILE;
   window.distanceTexts = [];
   window.distanceOverlay = new PIXI.Graphics();
   window.pathOverlay = new PIXI.Graphics();
   window.pathOverlay.lineStyle(pathLineWidth, pathLineColor);
 
-  // Set line for paths
-  for (const tile of tileMap.values()) {
+  for (const tile of movementCostMap.values()) {
     let drawTile = false;
-    if (targetSet.size === 0 || idealTileMap.has(tile.key)) {
+    if (targetRangeSet.size === 0 || idealTileMap.has(tile.key)) {
       drawTile = true;
     } else {
       for (const idealTile of idealTileMap.values()) {
@@ -301,20 +338,20 @@ function drawCosts(tileMap, targetSet) {
         window.distanceTexts.push(text);
       }
 
-      // Annotate upstream
+      // Show pathing
       if (showPathLines) {
-        let squareCenter = tile.centerPt;
+        let tileCenter = tile.centerPt;
         if (tile.upstreams !== undefined) {
           for (const upstream of tile.upstreams) {
             let upstreamCenter = upstream.centerPt;
-            window.pathOverlay.moveTo(squareCenter.x, squareCenter.y);
+            window.pathOverlay.moveTo(tileCenter.x, tileCenter.y);
             window.pathOverlay.lineTo(upstreamCenter.x, upstreamCenter.y);
           }
         }
       }
 
       // Color tile based on movement
-      let color = colorByActions[Math.floor(Math.floor(tile.distance - 1 + FUDGE) / movementSpeed)];
+      let color = colorByActions[Math.floor(Math.floor(tile.distance - 1 + FUDGE) / tilesMovedPerAction)];
       let cornerPt = tile.pt;
       if (idealTileMap.has(tile.key)) {
         //window.distanceOverlay.lineStyle(highlightLineWidth, color);
@@ -353,11 +390,11 @@ function clearAll() {
   }
 }
 
-if (typeof(window.distanceOverlay) == "undefined") {
-  const movementSquares = calculateMovementCosts();
-  const targetSet = calculateTargetRangeSet();
+if (typeof(window.distanceOverlay) === "undefined") {
+  const movementCosts = calculateMovementCosts();
+  const targetRangeSet = calculateTargetRangeSet();
 
-  drawCosts(movementSquares, targetSet);
+  drawCosts(movementCosts, targetRangeSet);
 } else {
   clearAll();
 }
