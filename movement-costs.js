@@ -1,19 +1,27 @@
 // Main choices
 const actionsToShow = 2;
-const weaponRange = 30;
-const showDifficultTerrain = false;
-const showPathLines = false;
+const weaponRange = 60;
+const showDifficultTerrain = true;
 const showNumericMovementCost = false;
+const showPathLines = false;
+const showPotentialTargets = true;
 const showTurnOrder = true;
+const showWalls = true;
 
-// Colors and widths
-const colorByActions = [0x00ff00, 0xffff00, 0xff0000]; // green, yellow, red
-const pathLineColor = 0x0000ff; // blue
+// Colors
+const colorByActions = [0xffffff, 0x00ff00, 0xffff00, 0xff0000, 0x800080]; // white, green, yellow, red, purple
 const highlightLineColor = 0xffffff; // white
-const pathLineWidth = 1;
-const highlightLineWidth = 3;
+const pathLineColor = 0x0000ff; // blue
+const wallLineColor = 0x40e0d0; // turquise
 const movementAlpha = 0.3; // 0 is completely transparent, 1 is completely opaque
 
+// Line widths
+const wallLineWidth = 3;
+const pathLineWidth = 1;
+const highlightLineWidth = 3;
+const potentialTargetLineWidth = 3;
+
+// Fonts
 const movementCostStyle = {
   fontFamily: 'Arial',
   fontSize: 20,
@@ -24,12 +32,15 @@ const movementCostStyle = {
 
 const turnOrderStyle = {
   fontFamily: 'Arial',
-  fontSize: 50,
+  fontSize: 40,
   fill: 0xffffff, // white
   stroke: 0x000000, // black
   strokeThickness: 1
 };
 
+////////////////////////
+//// Main program //////
+////////////////////////
 // Don't mess with these
 const MAX_DIST = 999;
 const FEET_PER_TILE = 5;
@@ -188,8 +199,8 @@ function calculateMovementCosts() {
     }
   }
 
-  // Filter out any tiles which have distance 999 (unreachable) or 0 (origin)
-  return new Map([...tileMap].filter(kv => kv[1].distance !== MAX_DIST && kv[1].distance > FUDGE));
+  // Filter out any tiles which have distance 999 (unreachable)
+  return new Map([...tileMap].filter(kv => kv[1].distance !== MAX_DIST));
 }
 
 // Abstract this because IntelliJ complains that canvas.walls.checkCollision isn't accessible and we don't want to annotate it everywhere
@@ -198,7 +209,8 @@ function checkCollision(ray, opts) {
   return canvas.walls.checkCollision(ray, opts);
 }
 
-function calculateTilesInRange(rangeInTiles, targetTile) {
+function calculateTilesInRange(rangeInTiles, target) {
+  const targetTile = GridTile.fromPixels(target.x, target.y);
   const tileSet = new Set();
   const targetGridX = targetTile.gx;
   const targetGridY = targetTile.gy;
@@ -242,6 +254,7 @@ function calculateTilesInRange(rangeInTiles, targetTile) {
               [testTilePoint.x + canvas.grid.size/2, testTilePoint.y + canvas.grid.size/2]
             ];
 
+            /*
             let clearShot = false;
             for (const testTilePoint of testTilePoints) {
               for (const targetTestPoint of targetTestPoints) {
@@ -252,7 +265,8 @@ function calculateTilesInRange(rangeInTiles, targetTile) {
                 }
               }
             }
-
+             */
+            let clearShot = checkTileToTokenVisibility(testTile, target);
             if (clearShot) {
               tileSet.add(testTile);
             }
@@ -268,9 +282,8 @@ function calculateTargetRangeSet() {
   const targetSet = new Set();
   const weaponRangeInTiles = weaponRange / FEET_PER_TILE;
 
-  for (const target of game.user.targets) {
-    const targetTile = GridTile.fromPixels(target.x, target.y);
-    targetSet.add(calculateTilesInRange(weaponRangeInTiles, targetTile));
+  for (const targetToken of game.user.targets) {
+    targetSet.add(calculateTilesInRange(weaponRangeInTiles, targetToken));
   }
   return targetSet;
 }
@@ -298,23 +311,53 @@ function calculateIdealTileMap(movementTileMap, targetSet, rangeMap) {
   return idealTileMap;
 }
 
-// game.combat.combatants[0].initiative
-function calculatePotentialTargetMap(movementTileMap) {
+// For some reason the combatant just has the data structure, not the Token
+function getCombatantToken(combatant) {
+  // noinspection JSUnresolvedFunction
+  return canvas.tokens.get(combatant.tokenId);
+}
+
+function drawPotentialTargets(movementCosts) {
   const currentToken = getCurrentToken();
-  const tokenCenterPoint = {x: currentToken.x + currentToken.hitArea.x/2, y: currentToken.y + currentToken.hitArea.y/2};
+  const tilesMovedPerAction = getSpeed() / FEET_PER_TILE;
+  const weaponRangeInTiles = weaponRange / FEET_PER_TILE;
 
   for (const combatant of game.combat.combatants) {
-    // noinspection JSUnresolvedFunction
-    const combatantToken = canvas.tokens.get(combatant.tokenId); // For some reason the combatant just has the data structure, not the Token
-    if (!combatantToken.actor.hasPlayerOwner && combatantToken.data.disposition == -1) { // Hostile NPC
-      const combatantCenterPoint = {
-        x: combatantToken.x + combatantToken.hitArea.x/2,
-        y: combatantToken.y + combatantToken.hitArea.y/2
-      };
-      const ray = new Ray(combatantCenterPoint, tokenCenterPoint)
-      // TODO Finish this
+    const combatantToken = getCombatantToken(combatant);
+    if (!combatantToken.actor.hasPlayerOwner && combatantToken.data.disposition === -1) { // Hostile NPC
+    //if (true) {
+      if (checkTokenVisibility(currentToken, combatantToken)) {
+        let tile = GridTile.fromPixels(combatantToken.x, combatantToken.y);
+        tile = movementCosts.get(tile.key);
+        if (tile === undefined) {
+          continue;
+        }
+
+        let tilesInRange = calculateTilesInRange(weaponRangeInTiles, combatantToken);
+        let bestCost = MAX_DIST;
+
+        for (const tileInRange of tilesInRange) {
+          const costTile = movementCosts.get(tileInRange.key)
+          if (costTile === undefined) {
+            continue;
+          }
+          if (costTile.distance < bestCost) {
+            bestCost = costTile.distance;
+          }
+        }
+
+        const colorIndex = Math.min(Math.ceil(bestCost / tilesMovedPerAction), colorByActions.length-1);
+        let color = colorByActions[colorIndex];
+        window.potentialTargetOverlay.lineStyle(potentialTargetLineWidth, color)
+        window.potentialTargetOverlay.drawCircle(
+          combatantToken.x + combatantToken.hitArea.width/2,
+          combatantToken.y + combatantToken.hitArea.height/2,
+          Math.pow(Math.pow(combatantToken.hitArea.width/2, 2) + Math.pow(combatantToken.hitArea.height/2, 2), .5)
+        );
+      }
     }
   }
+  canvas.drawings.addChild(window.potentialTargetOverlay);
 }
 
 // Copied straight from foundry.js (_sortCombatants)
@@ -327,6 +370,63 @@ function combatantComparator(a, b) {
     let cn = an.localeCompare(bn);
     if ( cn !== 0 ) return cn;
     return a.tokenId - b.tokenId;
+}
+
+function checkVisibility(a, b) {
+  for(let i = 0; i < a.w / canvas.grid.size; i++) {
+    for(let j = 0; j < a.h / canvas.grid.size; j++) {
+      for(let k = 0; k < b.w / canvas.grid.size; k++) {
+        for(let l = 0; l < b.h / canvas.grid.size; l++) {
+          const p1 = {
+            x: a.x + a.w/2 + canvas.grid.size * i,
+            y: a.y + a.h/2 + canvas.grid.size * j
+          };
+          const p2 = {
+            x: b.x + b.w/2 + canvas.grid.size * k,
+            y: b.y + b.h/2 + canvas.grid.size * l
+          };
+          const ray = new Ray(p1, p2);
+          if (!checkCollision(ray, {movement: false, sight: true, mode: 'any'})) {
+            return true;
+          }
+        }
+      }
+    }
+  }
+  return false;
+}
+
+function checkTokenVisibility(token1, token2) {
+  const a = {
+    x: token1.x,
+    y: token1.y,
+    w: token1.hitArea.width,
+    h: token1.hitArea.height
+  };
+  const b = {
+    x: token2.x,
+    y: token2.y,
+    w: token2.hitArea.width,
+    h: token2.hitArea.height
+  }
+  return checkVisibility(a, b);
+}
+
+function checkTileToTokenVisibility(tile, token) {
+  const tilePt = tile.pt;
+  const a = {
+    x: token.x,
+    y: token.y,
+    w: token.hitArea.width,
+    h: token.hitArea.height
+  };
+  const b = {
+    x: tilePt.x,
+    y: tilePt.y,
+    w: canvas.grid.size,
+    h: canvas.grid.size
+  }
+  return checkVisibility(a, b);
 }
 
 function drawTurnOrder() {
@@ -353,8 +453,7 @@ function drawTurnOrder() {
     if (!seenCurrent) {
       sortedCombatants.push(sortedCombatants.shift()); // Move first element to last element
     } else {
-      const isVisible = true; // TODO Figure out how to calculate this
-      if (turnOrder > 0 && isVisible) {
+      if (turnOrder > 0 && checkTokenVisibility(currentToken, combatantToken)) {
         const text = new PIXI.Text(turnOrder, turnOrderStyle);
         text.position.x = combatantToken.x + combatantToken.hitArea.width / 2 - text.width / 2;
         text.position.y = combatantToken.y + combatantToken.hitArea.height / 2 - text.height / 2;
@@ -377,7 +476,6 @@ function drawCosts(movementCostMap, targetRangeSet) {
     ui.notifications.warn("No tiles are within movement range AND attack range")
     return;
   }
-  const potentialTargetMap = idealTileMap.size === 0 ? calculatePotentialTargetMap(movementCostMap) : new Map();
 
   const tilesMovedPerAction = getSpeed() / FEET_PER_TILE;
   window.distanceTexts = [];
@@ -418,7 +516,8 @@ function drawCosts(movementCostMap, targetRangeSet) {
       }
 
       // Color tile based on movement
-      let color = colorByActions[Math.floor(Math.floor(tile.distance - 1 + FUDGE) / tilesMovedPerAction)];
+      const colorIndex = Math.min(Math.ceil(Math.floor(tile.distance + FUDGE) / tilesMovedPerAction), colorByActions.length-1);
+      let color = colorByActions[colorIndex];
       let cornerPt = tile.pt;
       if (idealTileMap.has(tile.key)) {
         window.distanceOverlay.lineStyle(highlightLineWidth, highlightLineColor);
@@ -437,10 +536,22 @@ function drawCosts(movementCostMap, targetRangeSet) {
   for (const text of window.distanceTexts) {
     canvas.drawings.addChild(text);
   }
+}
 
-  if (showDifficultTerrain) {
-    canvas.terrain.visible = true;
+function drawWalls() {
+  window.wallsOverlay.lineStyle(wallLineWidth, wallLineColor);
+  for (const quadtree of canvas.walls.quadtree.nodes) {
+    for (const obj of quadtree.objects) {
+      const wall = obj.t;
+      if (wall.data.door || !wall.data.move) {
+        continue;
+      }
+      const c = wall.data.c;
+      window.wallsOverlay.moveTo(c[0], c[1]);
+      window.wallsOverlay.lineTo(c[2], c[3]);
+    }
   }
+  canvas.drawings.addChild(window.wallsOverlay);
 }
 
 function clearAll() {
@@ -452,6 +563,10 @@ function clearAll() {
   window.pathOverlay.destroy();
   window.pathOverlay = undefined;
   window.turnOrderTexts = [];
+  window.potentialTargetOverlay.destroy();
+  window.potentialTargetOverlay = undefined;
+  window.wallsOverlay.destroy();
+  window.wallsOverlay = undefined;
 
   if (showDifficultTerrain) {
     canvas.terrain.visible = false;
@@ -464,6 +579,8 @@ function initializePersistentVariables() {
 
   window.distanceOverlay = new PIXI.Graphics();
   window.pathOverlay = new PIXI.Graphics();
+  window.potentialTargetOverlay = new PIXI.Graphics();
+  window.wallsOverlay = new PIXI.Graphics();
 }
 
 if (typeof(window.distanceOverlay) === "undefined") {
@@ -474,6 +591,18 @@ if (typeof(window.distanceOverlay) === "undefined") {
   drawCosts(movementCosts, targetRangeSet);
   if (showTurnOrder) {
     drawTurnOrder();
+  }
+
+  if (showPotentialTargets) {
+    drawPotentialTargets(movementCosts);
+  }
+
+  if (showWalls) {
+    drawWalls();
+  }
+
+  if (showDifficultTerrain) {
+    canvas.terrain.visible = true;
   }
 } else {
   clearAll();
