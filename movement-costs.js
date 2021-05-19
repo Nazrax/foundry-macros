@@ -2,7 +2,7 @@
 const actionsToShow = 2;
 const weaponRange = 60;
 const showDifficultTerrain = true;
-const showNumericMovementCost = true;
+const showNumericMovementCost = false;
 const showPathLines = false;
 const showPotentialTargets = true;
 const showTurnOrder = true;
@@ -217,13 +217,6 @@ function calculateTilesInRange(rangeInTiles, targetToken) {
   const targetGridY = targetTile.gy;
   const targetGridHeight = Math.floor(targetToken.hitArea.height / canvas.grid.size);
   const targetGridWidth = Math.floor(targetToken.hitArea.width / canvas.grid.size);
-  const targetTestPoints = [
-    [targetToken.x, targetToken.y],
-    [targetToken.x + targetToken.hitArea.width, targetToken.y],
-    [targetToken.x, targetToken.y + targetToken.hitArea.height],
-    [targetToken.x + targetToken.hitArea.width, targetToken.y + targetToken.hitArea.height],
-    [targetToken.x + targetToken.hitArea.width/2, targetToken.y + targetToken.hitArea.height/2]
-  ];
 
   // Loop over X and Y deltas, computing distance for only a single quadrant
   for(let gridXDelta = 0; gridXDelta <= rangeInTiles; gridXDelta++) {
@@ -245,28 +238,8 @@ function calculateTilesInRange(rangeInTiles, targetToken) {
         for (const testGridX of gridXSet) {
           for (const testGridY of gridYSet) {
             const testTile = new GridTile(testGridX, testGridY);
-            const testTilePoint = testTile.pt;
-            // It turns out that, since walls can run through the middle of tiles, testing all 5 points ends up giving weird results
-            const testTilePoints = [
-              //[fPt.x, fPt.y],
-              //[fPt.x + canvas.grid.size, fPt.y],
-              //[fPt.x, fPt.y + canvas.grid.size],
-              //[fPt.x + canvas.grid.size, fPt.y + canvas.grid.size],
-              [testTilePoint.x + canvas.grid.size/2, testTilePoint.y + canvas.grid.size/2]
-            ];
+            //const testTilePoint = testTile.pt;
 
-            /*
-            let clearShot = false;
-            for (const testTilePoint of testTilePoints) {
-              for (const targetTestPoint of targetTestPoints) {
-                const ray = new Ray({x: testTilePoint[0], y: testTilePoint[1]}, {x: targetTestPoint[0], y: targetTestPoint[1]});
-                if (!checkCollision(ray, {blockMovement: false, blockSenses: true, mode: 'any'})) {
-                  clearShot = true;
-                  break;
-                }
-              }
-            }
-             */
             let clearShot = checkTileToTokenVisibility(testTile, targetToken);
             if (clearShot) {
               tileSet.add(testTile);
@@ -319,7 +292,7 @@ function getCombatantToken(combatant) {
 }
 
 function drawPotentialTargets(movementCosts) {
-  const currentToken = getCurrentToken();
+  //const currentToken = getCurrentToken();
   const tilesMovedPerAction = getSpeed() / FEET_PER_TILE;
   const weaponRangeInTiles = weaponRange / FEET_PER_TILE;
 
@@ -334,7 +307,7 @@ function drawPotentialTargets(movementCosts) {
       //if (checkTokenVisibility(currentToken, combatantToken)) {
       //const tolerance = Math.min(combatantToken.w, combatantToken.h) / 4;
       console.log(combatantToken);
-      if (combatantToken.isVisible) {
+      if (combatantToken.visible) {
         let tilesInRange = calculateTilesInRange(weaponRangeInTiles, combatantToken);
         let bestCost = MAX_DIST;
 
@@ -374,61 +347,22 @@ function combatantComparator(a, b) {
     return a.tokenId - b.tokenId;
 }
 
-function checkVisibility(a, b) {
-  for(let i = 0; i < a.w / canvas.grid.size; i++) {
-    for(let j = 0; j < a.h / canvas.grid.size; j++) {
-      for(let k = 0; k < b.w / canvas.grid.size; k++) {
-        for(let l = 0; l < b.h / canvas.grid.size; l++) {
-          const p1 = {
-            x: a.x + a.w/2 + canvas.grid.size * i,
-            y: a.y + a.h/2 + canvas.grid.size * j
-          };
-          const p2 = {
-            x: b.x + b.w/2 + canvas.grid.size * k,
-            y: b.y + b.h/2 + canvas.grid.size * l
-          };
-          const ray = new Ray(p1, p2);
-          if (!checkCollision(ray, {movement: false, sight: true, mode: 'any'})) {
-            return true;
-          }
-        }
-      }
+function checkTileToTokenVisibility(tile, token) {
+  const t = Math.min(token.h, token.w) / 4;
+  const offsets = t > 0 ? [[0, 0],[-t,0],[t,0],[0,-t],[0,t],[-t,-t],[-t,t],[t,t],[t,-t]] : [[0,0]];
+  const points = offsets.map(o => new PIXI.Point(token.center.x + o[0], token.center.y + o[1]));
+  const tileCenterPt = tile.centerPt
+
+  let isVisible = false;
+  for (const point of points) {
+    //console.log(`Shooting ray from ${tileCenterPt.x}/${tileCenterPt.y} to ${point.x}/${point.y}`)
+    const ray = new Ray(tileCenterPt, point);
+    if (!checkCollision(ray, {blockMovement: false, blockSenses: true, mode: 'any'})) {
+      return true;
     }
   }
+
   return false;
-}
-
-function checkTokenVisibility(token1, token2) {
-  const a = {
-    x: token1.x,
-    y: token1.y,
-    w: token1.hitArea.width,
-    h: token1.hitArea.height
-  };
-  const b = {
-    x: token2.x,
-    y: token2.y,
-    w: token2.hitArea.width,
-    h: token2.hitArea.height
-  }
-  return checkVisibility(a, b);
-}
-
-function checkTileToTokenVisibility(tile, token) {
-  const tilePt = tile.pt;
-  const a = {
-    x: token.x,
-    y: token.y,
-    w: token.hitArea.width,
-    h: token.hitArea.height
-  };
-  const b = {
-    x: tilePt.x,
-    y: tilePt.y,
-    w: canvas.grid.size,
-    h: canvas.grid.size
-  }
-  return checkVisibility(a, b);
 }
 
 function drawTurnOrder() {
@@ -458,7 +392,7 @@ function drawTurnOrder() {
     if (!seenCurrent) {
       sortedCombatants.push(sortedCombatants.shift()); // Move first element to last element
     } else {
-      if (turnOrder > 0 && combatantToken.isVisible) {
+      if (turnOrder > 0 && combatantToken.visible) {
         const text = new PIXI.Text(turnOrder, turnOrderStyle);
         text.position.x = combatantToken.x + combatantToken.hitArea.width / 2 - text.width / 2;
         text.position.y = combatantToken.y + combatantToken.hitArea.height / 2 - text.height / 2;
@@ -595,12 +529,14 @@ if (typeof(window.distanceOverlay) === "undefined") {
 
   initializePersistentVariables();
   drawCosts(movementCosts, targetRangeSet);
-  if (showTurnOrder) {
-    drawTurnOrder();
-  }
+  if (game.user.targets.size === 0) {
+    if (showTurnOrder) {
+      drawTurnOrder();
+    }
 
-  if (showPotentialTargets) {
-    drawPotentialTargets(movementCosts);
+    if (showPotentialTargets) {
+      drawPotentialTargets(movementCosts);
+    }
   }
 
   if (showWalls) {
