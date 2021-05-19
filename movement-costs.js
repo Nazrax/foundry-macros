@@ -2,11 +2,12 @@
 const actionsToShow = 2;
 const weaponRange = 60;
 const showDifficultTerrain = true;
-const showNumericMovementCost = false;
+const showNumericMovementCost = true;
 const showPathLines = false;
 const showPotentialTargets = true;
 const showTurnOrder = true;
 const showWalls = true;
+const roundNumericMovementCost = true;
 
 // Colors
 const colorByActions = [0xffffff, 0x00ff00, 0xffff00, 0xff0000, 0x800080]; // white, green, yellow, red, purple
@@ -24,9 +25,9 @@ const potentialTargetLineWidth = 3;
 // Fonts
 const movementCostStyle = {
   fontFamily: 'Arial',
-  fontSize: 20,
+  fontSize: 30,
   fill: 0x0000ff, // blue
-  stroke: 0x000000, // white
+  stroke: 0xffffff, // white
   strokeThickness: 1
 };
 
@@ -35,7 +36,7 @@ const turnOrderStyle = {
   fontSize: 40,
   fill: 0xffffff, // white
   stroke: 0x000000, // black
-  strokeThickness: 1
+  strokeThickness: 6
 };
 
 ////////////////////////
@@ -209,19 +210,19 @@ function checkCollision(ray, opts) {
   return canvas.walls.checkCollision(ray, opts);
 }
 
-function calculateTilesInRange(rangeInTiles, target) {
-  const targetTile = GridTile.fromPixels(target.x, target.y);
+function calculateTilesInRange(rangeInTiles, targetToken) {
+  const targetTile = GridTile.fromPixels(targetToken.x, targetToken.y);
   const tileSet = new Set();
   const targetGridX = targetTile.gx;
   const targetGridY = targetTile.gy;
-  const targetGridHeight = Math.floor(target.hitArea.height / canvas.grid.size);
-  const targetGridWidth = Math.floor(target.hitArea.width / canvas.grid.size);
+  const targetGridHeight = Math.floor(targetToken.hitArea.height / canvas.grid.size);
+  const targetGridWidth = Math.floor(targetToken.hitArea.width / canvas.grid.size);
   const targetTestPoints = [
-    [target.x, target.y],
-    [target.x + target.hitArea.width, target.y],
-    [target.x, target.y + target.hitArea.height],
-    [target.x + target.hitArea.width, target.y + target.hitArea.height],
-    [target.x + target.hitArea.width/2, target.y + target.hitArea.height/2]
+    [targetToken.x, targetToken.y],
+    [targetToken.x + targetToken.hitArea.width, targetToken.y],
+    [targetToken.x, targetToken.y + targetToken.hitArea.height],
+    [targetToken.x + targetToken.hitArea.width, targetToken.y + targetToken.hitArea.height],
+    [targetToken.x + targetToken.hitArea.width/2, targetToken.y + targetToken.hitArea.height/2]
   ];
 
   // Loop over X and Y deltas, computing distance for only a single quadrant
@@ -233,7 +234,7 @@ function calculateTilesInRange(rangeInTiles, target) {
 
       const shotDistance = calculateGridDistance({x: 0, y: 0}, {x: gridXDelta, y: gridYDelta});
       if (shotDistance < rangeInTiles + FUDGE) { // We're within range
-        // We need to test visibily for all 4 quadrants
+        // We need to test visibility for all 4 quadrants
         // Use sets so we don't have to explicitly test for "on the same row/column as"
         const gridXSet = new Set();
         const gridYSet = new Set();
@@ -266,7 +267,7 @@ function calculateTilesInRange(rangeInTiles, target) {
               }
             }
              */
-            let clearShot = checkTileToTokenVisibility(testTile, target);
+            let clearShot = checkTileToTokenVisibility(testTile, targetToken);
             if (clearShot) {
               tileSet.add(testTile);
             }
@@ -322,17 +323,18 @@ function drawPotentialTargets(movementCosts) {
   const tilesMovedPerAction = getSpeed() / FEET_PER_TILE;
   const weaponRangeInTiles = weaponRange / FEET_PER_TILE;
 
+  if (game.combat === null) {
+    return;
+  }
+
   for (const combatant of game.combat.combatants) {
     const combatantToken = getCombatantToken(combatant);
     if (!combatantToken.actor.hasPlayerOwner && combatantToken.data.disposition === -1) { // Hostile NPC
     //if (true) {
-      if (checkTokenVisibility(currentToken, combatantToken)) {
-        let tile = GridTile.fromPixels(combatantToken.x, combatantToken.y);
-        tile = movementCosts.get(tile.key);
-        if (tile === undefined) {
-          continue;
-        }
-
+      //if (checkTokenVisibility(currentToken, combatantToken)) {
+      //const tolerance = Math.min(combatantToken.w, combatantToken.h) / 4;
+      console.log(combatantToken);
+      if (combatantToken.isVisible) {
         let tilesInRange = calculateTilesInRange(weaponRangeInTiles, combatantToken);
         let bestCost = MAX_DIST;
 
@@ -432,6 +434,9 @@ function checkTileToTokenVisibility(tile, token) {
 function drawTurnOrder() {
   const currentToken = getCurrentToken();
   const currentTokenId = currentToken.id;
+  if (game.combat === null) {
+    return;
+  }
   const sortedCombatants = game.combat.combatants.sort(combatantComparator)
   let seenCurrent = false;
   let turnOrder = 0;
@@ -453,7 +458,7 @@ function drawTurnOrder() {
     if (!seenCurrent) {
       sortedCombatants.push(sortedCombatants.shift()); // Move first element to last element
     } else {
-      if (turnOrder > 0 && checkTokenVisibility(currentToken, combatantToken)) {
+      if (turnOrder > 0 && combatantToken.isVisible) {
         const text = new PIXI.Text(turnOrder, turnOrderStyle);
         text.position.x = combatantToken.x + combatantToken.hitArea.width / 2 - text.width / 2;
         text.position.y = combatantToken.y + combatantToken.hitArea.height / 2 - text.height / 2;
@@ -496,7 +501,8 @@ function drawCosts(movementCostMap, targetRangeSet) {
     if (drawTile) {
       // Annotate distance
       if (showNumericMovementCost) {
-        const text = new PIXI.Text(tile.distance, movementCostStyle);
+        const label = roundNumericMovementCost ? Math.floor(tile.distance + FUDGE) : tile.distance;
+        const text = new PIXI.Text(label, movementCostStyle);
         const pt = tile.pt;
         text.position.x = pt.x;
         text.position.y = pt.y;
