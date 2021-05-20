@@ -285,28 +285,29 @@ function calculateIdealTileMap(movementTileMap, targetSet, rangeMap) {
   return idealTileMap;
 }
 
-// For some reason the combatant just has the data structure, not the Token
+// For some reason the combatant just has the Token's data structure, not the Token object
 function getCombatantToken(combatant) {
   // noinspection JSUnresolvedFunction
   return canvas.tokens.get(combatant.tokenId);
 }
 
-function drawPotentialTargets(movementCosts) {
-  //const currentToken = getCurrentToken();
-  const tilesMovedPerAction = getSpeed() / FEET_PER_TILE;
-  const weaponRangeInTiles = weaponRange / FEET_PER_TILE;
+// Abstract this to avoid Idea's warnings
+function getCombatantTokenDisposition(combatantToken) {
+  // noinspection JSUnresolvedVariable
+  return combatantToken.data.disposition;
+}
 
+function drawPotentialTargets(movementCosts) {
   if (game.combat === null) {
     return;
   }
 
+  const tilesMovedPerAction = getSpeed() / FEET_PER_TILE;
+  const weaponRangeInTiles = weaponRange / FEET_PER_TILE;
+
   for (const combatant of game.combat.combatants) {
     const combatantToken = getCombatantToken(combatant);
-    if (!combatantToken.actor.hasPlayerOwner && combatantToken.data.disposition === -1) { // Hostile NPC
-    //if (true) {
-      //if (checkTokenVisibility(currentToken, combatantToken)) {
-      //const tolerance = Math.min(combatantToken.w, combatantToken.h) / 4;
-      console.log(combatantToken);
+    if (getCombatantTokenDisposition(combatantToken) === -1) { // Hostile NPC
       if (combatantToken.visible) {
         let tilesInRange = calculateTilesInRange(weaponRangeInTiles, combatantToken);
         let bestCost = MAX_DIST;
