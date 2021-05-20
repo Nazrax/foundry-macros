@@ -115,6 +115,11 @@ class MovementPlanner {
   }
 
   static toggle({weaponRange = 30}) {
+    if (getCurrentToken() === undefined) {
+      console.log("Trying to toggle movement planner, but no current token is available; aborting");
+      return;
+    }
+
     if (!globalThis.movementPlanner.instance) {
       globalThis.movementPlanner.instance = new MovementPlanner({weaponRange: weaponRange});
       globalThis.movementPlanner.instance.drawAll();
@@ -237,10 +242,11 @@ class MovementPlanner {
 
     const tilesMovedPerAction = this.getSpeed() / FEET_PER_TILE;
     const weaponRangeInTiles = this.weaponRange / FEET_PER_TILE;
+    const myDisposition = getCombatantTokenDisposition(this.currentToken);
 
     for (const combatant of game.combat.combatants) {
       const combatantToken = getCombatantToken(combatant);
-      if (getCombatantTokenDisposition(combatantToken) === -1) { // Hostile NPC
+      if (getCombatantTokenDisposition(combatantToken) !== myDisposition) {
         if (combatantToken.visible) {
           let tilesInRange = calculateTilesInRange(weaponRangeInTiles, combatantToken);
           let bestCost = MAX_DIST;
@@ -360,7 +366,8 @@ class MovementPlanner {
 
     while(i < sortedCombatants.length) {
       if (j++ > sortedCombatants.length * 3) {
-        throw "Got into an infinite loop in drawTurnOrder"
+        console.log("Current token doesn't seem to be part of encounter; returning");
+        return;
       }
 
       const combatant = sortedCombatants[i];
