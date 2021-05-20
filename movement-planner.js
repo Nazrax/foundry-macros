@@ -1,20 +1,21 @@
 // Main choices
 const actionsToShow = 2;
 const weaponRange = 60;
-const showDifficultTerrain = true;
+const showDifficultTerrain = false;
 const showNumericMovementCost = false;
 const showPathLines = false;
 const showPotentialTargets = true;
 const showTurnOrder = true;
-const showWalls = true;
+const showWalls = false;
 const roundNumericMovementCost = true;
+const enableHooks = false;
 
 // Colors
 const colorByActions = [0xffffff, 0x00ff00, 0xffff00, 0xff0000, 0x800080]; // white, green, yellow, red, purple
 const highlightLineColor = 0xffffff; // white
 const pathLineColor = 0x0000ff; // blue
 const wallLineColor = 0x40e0d0; // turquise
-const movementAlpha = 0.3; // 0 is completely transparent, 1 is completely opaque
+const movementAlpha = 0.15; // 0 is completely transparent, 1 is completely opaque
 
 // Line widths
 const wallLineWidth = 3;
@@ -104,10 +105,25 @@ class GridTile {
   }
 }
 
-// TODO Use non-macro method
 function getCurrentToken() {
   // noinspection JSUnresolvedVariable
-  return token;
+  if (typeof(token) !== "undefined") {
+    // noinspection JSUnresolvedVariable
+    return token;
+  } else {
+    // noinspection JSUnresolvedVariable
+    if (canvas.tokens.controlled.length > 0) {
+      // noinspection JSUnresolvedVariable
+      return canvas.tokens.controlled[0];
+    } else {
+      const activeTokens = game.user?.character?.getActiveTokens();
+      if (activeTokens) {
+        return activeTokens[0];
+      } else {
+        return undefined;
+      }
+    }
+  }
 }
 
 function getSpeed() {
@@ -252,19 +268,19 @@ function calculateTilesInRange(rangeInTiles, targetToken) {
   return tileSet;
 }
 
-function calculateTargetRangeSet() {
-  const targetSet = new Set();
+function calculateTargetRangeMap() {
+  const targetMap = new Map();
   const weaponRangeInTiles = weaponRange / FEET_PER_TILE;
 
   for (const targetToken of game.user.targets) {
-    targetSet.add(calculateTilesInRange(weaponRangeInTiles, targetToken));
+    targetMap.set(targetToken.id, calculateTilesInRange(weaponRangeInTiles, targetToken));
   }
-  return targetSet;
+  return targetMap;
 }
 
-function buildRangeMap(targetSet) {
+function buildRangeMap(targetMap) {
   const rangeMap = new Map();
-  for (const tileSet of targetSet.values()) {
+  for (const tileSet of targetMap.values()) {
     for (const tile of tileSet) {
       const tileKey = tile.key;
       let count = rangeMap.get(tileKey) ?? 0;
@@ -275,10 +291,10 @@ function buildRangeMap(targetSet) {
   return rangeMap;
 }
 
-function calculateIdealTileMap(movementTileMap, targetSet, rangeMap) {
+function calculateIdealTileMap(movementTileMap, targetMap, rangeMap) {
   const idealTileMap = new Map();
   for (const tile of movementTileMap.values()) {
-    if (rangeMap.get(tile.key) === targetSet.size) { // Every target is reachable from here
+    if (rangeMap.get(tile.key) === targetMap.size) { // Every target is reachable from here
       idealTileMap.set(tile.key, tile);
     }
   }
@@ -297,7 +313,7 @@ function getCombatantTokenDisposition(combatantToken) {
   return combatantToken.data.disposition;
 }
 
-function drawPotentialTargets(movementCosts) {
+function drawPotentialTargets(movementCosts, targetMap) {
   if (game.combat === null) {
     return;
   }
@@ -354,9 +370,7 @@ function checkTileToTokenVisibility(tile, token) {
   const points = offsets.map(o => new PIXI.Point(token.center.x + o[0], token.center.y + o[1]));
   const tileCenterPt = tile.centerPt
 
-  let isVisible = false;
   for (const point of points) {
-    //console.log(`Shooting ray from ${tileCenterPt.x}/${tileCenterPt.y} to ${point.x}/${point.y}`)
     const ray = new Ray(tileCenterPt, point);
     if (!checkCollision(ray, {blockMovement: false, blockSenses: true, mode: 'any'})) {
       return true;
@@ -409,10 +423,10 @@ function drawTurnOrder() {
   }
 }
 
-function drawCosts(movementCostMap, targetRangeSet) {
-  const rangeMap = buildRangeMap(targetRangeSet);
-  const idealTileMap = calculateIdealTileMap(movementCostMap, targetRangeSet, rangeMap);
-  if (targetRangeSet.size > 0 && idealTileMap.size === 0) {
+function drawCosts(movementCostMap, targetRangeMap) {
+  const rangeMap = buildRangeMap(targetRangeMap);
+  const idealTileMap = calculateIdealTileMap(movementCostMap, targetRangeMap, rangeMap);
+  if (targetRangeMap.size > 0 && idealTileMap.size === 0) {
     ui.notifications.warn("No tiles are within movement range AND attack range")
     return;
   }
@@ -423,7 +437,7 @@ function drawCosts(movementCostMap, targetRangeSet) {
 
   for (const tile of movementCostMap.values()) {
     let drawTile = false;
-    if (targetRangeSet.size === 0 || idealTileMap.has(tile.key)) {
+    if (targetRangeMap.size === 0 || idealTileMap.has(tile.key)) {
       drawTile = true;
     } else {
       for (const idealTile of idealTileMap.values()) {
@@ -434,7 +448,6 @@ function drawCosts(movementCostMap, targetRangeSet) {
       }
     }
     if (drawTile) {
-      // Annotate distance
       if (showNumericMovementCost) {
         const label = roundNumericMovementCost ? Math.floor(tile.distance + FUDGE) : tile.distance;
         const text = new PIXI.Text(label, movementCostStyle);
@@ -444,7 +457,6 @@ function drawCosts(movementCostMap, targetRangeSet) {
         window.distanceTexts.push(text);
       }
 
-      // Show pathing
       if (showPathLines) {
         let tileCenter = tile.centerPt;
         if (tile.upstreams !== undefined) {
@@ -456,7 +468,7 @@ function drawCosts(movementCostMap, targetRangeSet) {
         }
       }
 
-      // Color tile based on movement
+      // Color tile based on number of actions to reach it
       const colorIndex = Math.min(Math.ceil(Math.floor(tile.distance + FUDGE) / tilesMovedPerAction), colorByActions.length-1);
       let color = colorByActions[colorIndex];
       let cornerPt = tile.pt;
@@ -524,12 +536,12 @@ function initializePersistentVariables() {
   window.wallsOverlay = new PIXI.Graphics();
 }
 
-if (typeof(window.distanceOverlay) === "undefined") {
+function drawAll() {
   const movementCosts = calculateMovementCosts();
-  const targetRangeSet = calculateTargetRangeSet();
+  const targetRangeMap = calculateTargetRangeMap();
 
   initializePersistentVariables();
-  drawCosts(movementCosts, targetRangeSet);
+  drawCosts(movementCosts, targetRangeMap);
   if (game.user.targets.size === 0) {
     if (showTurnOrder) {
       drawTurnOrder();
@@ -547,6 +559,42 @@ if (typeof(window.distanceOverlay) === "undefined") {
   if (showDifficultTerrain) {
     canvas.terrain.visible = true;
   }
+}
+
+function renderApplicationHook(...args) {
+  clearAll();
+  initializePersistentVariables();
+  drawAll();
+}
+
+function targetTokenHook(...args) {
+  clearAll();
+  initializePersistentVariables();
+  drawAll();
+}
+
+function registerHooks() {
+  window.movementPlannerRenderHookId = Hooks.on("renderApplication", renderApplicationHook);
+  window.movementPlannerTargetTokenHookId = Hooks.on("targetToken", targetTokenHook);
+}
+
+function unregisterHooks() {
+  Hooks.off("renderApplication", window.movementPlannerRenderHookId);
+  Hooks.off("targetToken", window.movementPlannerTargetTokenHookId);
+
+  window.movementPlannerRenderHookId = undefined;
+  window.movementPlannerTargetTokenHookId = undefined;
+  window.movementPlannerTestHook = undefined;
+}
+
+if (typeof(window.distanceOverlay) === "undefined") {
+  drawAll();
+  if (enableHooks) {
+    registerHooks();
+  }
 } else {
   clearAll();
+  if (enableHooks) {
+    unregisterHooks();
+  }
 }
