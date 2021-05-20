@@ -1,5 +1,5 @@
 // Main choices
-const WEAPON_RANGE = 10;
+const WEAPON_RANGE = 60;
 const actionsToShow = 2;
 const showDifficultTerrain = false;
 const showNumericMovementCost = false;
@@ -58,11 +58,6 @@ class GridTile {
     this._upstreamCache = undefined;
   }
 
-  static fromPixels(x, y) {
-    const [gx, gy] = canvas.grid.grid.getGridPositionFromPixels(x, y);
-    return new GridTile(gx, gy);
-  }
-
   get centerPt() {
     const pixels = canvas.grid.grid.getPixelsFromGridPosition(this.gx, this.gy);
     return { x: pixels[0]+canvas.grid.size/2, y: pixels[1]+canvas.grid.size/2 };
@@ -94,6 +89,11 @@ class GridTile {
       }
     }
     return this._upstreamCache;
+  }
+
+  static fromPixels(x, y) {
+    const [gx, gy] = canvas.grid.grid.getGridPositionFromPixels(x, y);
+    return new GridTile(gx, gy);
   }
 
   upstreamOf(tile) {
@@ -196,7 +196,6 @@ class MovementPlanner {
         const ray = new Ray(neighbor.centerPt, current.centerPt);
         if (checkCollision(ray, {blockMovement: true, blockSenses: false, mode: 'any'})) {
           // Blocked, do nothing
-          //console.log(`${neighbor.key} (${neighbor.centerPt.x}/${neighbor.centerPt.y}) is blocked from ${current.key} (${current.centerPt.x}/${current.centerPt.y})`);
         } else {
           let newDistance = current.distance + neighbor.cost;
           if (current.isDiagonal(neighbor)) { // diagonals
@@ -217,7 +216,6 @@ class MovementPlanner {
       }
     }
 
-    // Filter out any tiles which have distance 999 (unreachable)
     this.tileMap = new Map([...this.tileMap].filter(kv => kv[1].distance !== MAX_DIST));
     return this.tileMap;
   }
