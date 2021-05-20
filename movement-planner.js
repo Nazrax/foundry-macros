@@ -321,7 +321,7 @@ function drawPotentialTargets(movementCosts) {
           }
         }
 
-        const colorIndex = Math.min(Math.ceil(bestCost / tilesMovedPerAction), colorByActions.length-1);
+        const colorIndex = Math.min(Math.ceil(Math.floor(bestCost + FUDGE) / tilesMovedPerAction), colorByActions.length-1);
         let color = colorByActions[colorIndex];
         window.potentialTargetOverlay.lineStyle(potentialTargetLineWidth, color)
         window.potentialTargetOverlay.drawCircle(
