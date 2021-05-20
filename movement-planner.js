@@ -123,14 +123,10 @@ class MovementPlanner {
     if (!globalThis.movementPlanner.instance) {
       globalThis.movementPlanner.instance = new MovementPlanner({weaponRange: weaponRange});
       globalThis.movementPlanner.instance.drawAll();
-      if (enableHooks) {
-        globalThis.movementPlanner.instance.registerHooks();
-      }
+      globalThis.movementPlanner.instance.registerHooks();
     } else {
       globalThis.movementPlanner.instance.clearAll();
-      if (enableHooks) {
-        globalThis.movementPlanner.instance.unregisterHooks();
-      }
+      globalThis.movementPlanner.instance.unregisterHooks();
       globalThis.movementPlanner.instance = null;
       globalThis.movementPlanner = undefined;
     }
@@ -311,31 +307,45 @@ class MovementPlanner {
     this.drawAll();
   }
 
+  canvasInitHook() {
+    globalThis.movementPlanner.instance.clearAll();
+    globalThis.movementPlanner.instance.unregisterHooks();
+    globalThis.movementPlanner.instance = null;
+    globalThis.movementPlanner = undefined;
+  }
+
   registerHooks() {
-    this.hookIDs.renderApplication = Hooks.on("renderApplication", () => this.renderApplicationHook());
-    this.hookIDs.targetToken = Hooks.on("targetToken", () => this.targetTokenHook());
+    if (enableHooks) {
+      this.hookIDs.renderApplication = Hooks.on("renderApplication", () => this.renderApplicationHook());
+      this.hookIDs.targetToken = Hooks.on("targetToken", () => this.targetTokenHook());
+    }
+    this.hookIDs.canvasInit = Hooks.on("canvasInit", () => this.canvasInitHook());
   }
 
   unregisterHooks() {
-    Hooks.off("renderApplication", this.hookIDs.renderApplication);
-    Hooks.off("targetToken", this.hookIDs.targetToken);
-
-    this.hookIDs.renderApplication = undefined;
-    this.hookIDs.targetToken = undefined;
+    if (enableHooks) {
+      Hooks.off("renderApplication", this.hookIDs.renderApplication);
+      Hooks.off("targetToken", this.hookIDs.targetToken);
+      this.hookIDs.renderApplication = undefined;
+      this.hookIDs.targetToken = undefined;
+    }
+    Hooks.off("canvasInit", this.hookIDs.canvasInit);
+    this.hookIDs.sceneChange = undefined;
   }
 
   clearAll() {
-    this.overlays.distanceTexts?.forEach(t => {t.destroy()});
-    this.overlays.turnOrderTexts?.forEach(t => {t.destroy()});
+    this.overlays.distanceTexts?.forEach(t => {safeDestroy(t)});
+    this.overlays.turnOrderTexts?.forEach(t => {safeDestroy(t)});
+    safeDestroy(this.overlays.distanceOverlay);
+    safeDestroy(this.overlays.pathOverlay);
+    safeDestroy(this.overlays.potentialTargetOverlay);
+    safeDestroy(this.overlays.wallsOverlay);
+
     this.overlays.distanceTexts = [];
-    this.overlays.distanceOverlay?.destroy();
     this.overlays.distanceOverlay = undefined;
-    this.overlays.pathOverlay?.destroy();
     this.overlays.pathOverlay = undefined;
     this.overlays.turnOrderTexts = [];
-    this.overlays.potentialTargetOverlay?.destroy();
     this.overlays.potentialTargetOverlay = undefined;
-    this.overlays.wallsOverlay?.destroy();
     this.overlays.wallsOverlay = undefined;
 
     if (showDifficultTerrain) {
@@ -480,6 +490,14 @@ class MovementPlanner {
     canvas.drawings.addChild(this.overlays.wallsOverlay);
   }
 }
+
+function safeDestroy(thing) {
+    try {
+      thing.destroy();
+    } catch (error) {
+      // Ignore
+    }
+  }
 
 function getCurrentToken() {
   // noinspection JSUnresolvedVariable
