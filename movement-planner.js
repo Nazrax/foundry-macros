@@ -1,6 +1,6 @@
 // Main choices
+const WEAPON_RANGE = 10;
 const actionsToShow = 2;
-const weaponRange = 60;
 const showDifficultTerrain = false;
 const showNumericMovementCost = false;
 const showPathLines = false;
@@ -8,7 +8,7 @@ const showPotentialTargets = true;
 const showTurnOrder = true;
 const showWalls = false;
 const roundNumericMovementCost = true;
-const enableHooks = false;
+const enableHooks = true;
 
 // Colors
 const colorByActions = [0xffffff, 0x00ff00, 0xffff00, 0xff0000, 0x800080]; // white, green, yellow, red, purple
@@ -105,6 +105,377 @@ class GridTile {
   }
 }
 
+class MovementPlanner {
+  constructor({weaponRange= 30}) {
+    this.weaponRange = weaponRange;
+    this.overlays = {};
+    this.hookIDs = {};
+    this.currentToken = getCurrentToken();
+    this.tokenTile = GridTile.fromPixels(this.currentToken.x, this.currentToken.y);
+  }
+
+  static toggle({weaponRange = 30}) {
+    if (!globalThis.movementPlanner.instance) {
+      globalThis.movementPlanner.instance = new MovementPlanner({weaponRange: weaponRange});
+      globalThis.movementPlanner.instance.drawAll();
+      if (enableHooks) {
+        globalThis.movementPlanner.instance.registerHooks();
+      }
+    } else {
+      globalThis.movementPlanner.instance.clearAll();
+      if (enableHooks) {
+        globalThis.movementPlanner.instance.unregisterHooks();
+      }
+      globalThis.movementPlanner.instance = null;
+      globalThis.movementPlanner = undefined;
+    }
+  }
+
+  getSpeed() {
+    const actor = this.currentToken !== undefined ? this.currentToken.actor : game.user.character;
+    const speedAttr = actor.data.data.attributes.speed;
+    let speed = speedAttr.total ?? 0;
+    // noinspection JSUnresolvedVariable
+    speedAttr.otherSpeeds.forEach(otherSpeed => {
+      if (otherSpeed.total > speed) {
+        speed = otherSpeed.total;
+      }
+    })
+    return speed;
+  }
+
+  // Use Dijkstra's shortest path algorithm
+  calculateMovementCosts() {
+    if (this.tileMap) {
+      return this.tileMap;
+    }
+
+    const tilesPerAction = this.getSpeed() / FEET_PER_TILE;
+    const maxTiles = tilesPerAction * actionsToShow;
+
+    this.tokenTile.distance = 0;
+
+    // Keep a map of grid coordinate -> GridTile
+    this.tileMap = new Map();
+    this.tileMap.set(this.tokenTile.key, this.tokenTile);
+
+    const toVisit = new Set();
+    toVisit.add(this.tokenTile);
+
+    while (toVisit.size > 0) {
+      let current = new GridTile(undefined, undefined);
+
+      for (const tile of toVisit) {
+        if (tile.distance < current.distance) {
+          current = tile;
+        }
+      }
+      if (current.distance === MAX_DIST) { // Stop if cheapest tile is unreachable
+        break;
+      }
+      toVisit.delete(current);
+      if (current.visited) {
+        console.log("BUG: Trying to visit a tile twice");
+        continue;
+      }
+      current.visited = true;
+
+      const neighborGridXYs = canvas.grid.grid.getNeighbors(current.gx, current.gy);
+      for (const neighborGridXY of neighborGridXYs) {
+        let neighbor = new GridTile(neighborGridXY[0], neighborGridXY[1]);
+        if (this.tileMap.has(neighbor.key)) {
+          neighbor = this.tileMap.get(neighbor.key);
+        } else {
+          this.tileMap.set(neighbor.key, neighbor);
+        }
+
+        if (neighbor.visited) {
+          continue;
+        }
+
+        const ray = new Ray(neighbor.centerPt, current.centerPt);
+        if (checkCollision(ray, {blockMovement: true, blockSenses: false, mode: 'any'})) {
+          // Blocked, do nothing
+          //console.log(`${neighbor.key} (${neighbor.centerPt.x}/${neighbor.centerPt.y}) is blocked from ${current.key} (${current.centerPt.x}/${current.centerPt.y})`);
+        } else {
+          let newDistance = current.distance + neighbor.cost;
+          if (current.isDiagonal(neighbor)) { // diagonals
+            newDistance += .5;
+          }
+
+          if (Math.floor(newDistance+FUDGE) > maxTiles) {
+            // Do nothing
+          } else if (Math.abs(neighbor.distance - newDistance) < FUDGE) {
+            neighbor.upstreams.add(current);
+          } else if (newDistance < neighbor.distance) {
+            neighbor.upstreams = new Set();
+            neighbor.upstreams.add(current);
+            neighbor.distance = newDistance;
+            toVisit.add(neighbor);
+          }
+        }
+      }
+    }
+
+    // Filter out any tiles which have distance 999 (unreachable)
+    this.tileMap = new Map([...this.tileMap].filter(kv => kv[1].distance !== MAX_DIST));
+    return this.tileMap;
+  }
+
+  calculateTargetRangeMap() {
+    const targetMap = new Map();
+    const weaponRangeInTiles = this.weaponRange / FEET_PER_TILE;
+
+    for (const targetToken of game.user.targets) {
+      targetMap.set(targetToken.id, calculateTilesInRange(weaponRangeInTiles, targetToken));
+    }
+    return targetMap;
+  }
+
+  drawPotentialTargets(movementCosts) {
+    if (game.combat === null) {
+      return;
+    }
+
+    const tilesMovedPerAction = this.getSpeed() / FEET_PER_TILE;
+    const weaponRangeInTiles = this.weaponRange / FEET_PER_TILE;
+
+    for (const combatant of game.combat.combatants) {
+      const combatantToken = getCombatantToken(combatant);
+      if (getCombatantTokenDisposition(combatantToken) === -1) { // Hostile NPC
+        if (combatantToken.visible) {
+          let tilesInRange = calculateTilesInRange(weaponRangeInTiles, combatantToken);
+          let bestCost = MAX_DIST;
+
+          for (const tileInRange of tilesInRange) {
+            const costTile = movementCosts.get(tileInRange.key)
+            if (costTile === undefined) {
+              continue;
+            }
+            if (costTile.distance < bestCost) {
+              bestCost = costTile.distance;
+            }
+          }
+
+          const colorIndex = Math.min(Math.ceil(Math.floor(bestCost + FUDGE) / tilesMovedPerAction), colorByActions.length-1);
+          let color = colorByActions[colorIndex];
+
+          this.overlays.potentialTargetOverlay.lineStyle(potentialTargetLineWidth, color)
+          this.overlays.potentialTargetOverlay.drawCircle(
+            combatantToken.x + combatantToken.hitArea.width/2,
+            combatantToken.y + combatantToken.hitArea.height/2,
+            Math.pow(Math.pow(combatantToken.hitArea.width/2, 2) + Math.pow(combatantToken.hitArea.height/2, 2), .5)
+          );
+        }
+      }
+    }
+    canvas.drawings.addChild(this.overlays.potentialTargetOverlay);
+  }
+
+  drawAll() {
+    const movementCosts = this.calculateMovementCosts();
+    const targetRangeMap = this.calculateTargetRangeMap();
+
+    this.initializePersistentVariables();
+    this.drawCosts(movementCosts, targetRangeMap);
+    if (game.user.targets.size === 0) {
+      if (showTurnOrder) {
+        this.drawTurnOrder();
+      }
+
+      if (showPotentialTargets) {
+        this.drawPotentialTargets(movementCosts);
+      }
+    }
+
+    if (showWalls) {
+      this.drawWalls();
+    }
+
+    if (showDifficultTerrain) {
+      canvas.terrain.visible = true;
+    }
+  }
+
+  renderApplicationHook() {
+    this.clearAll();
+    this.drawAll();
+  }
+
+  targetTokenHook() {
+    this.clearAll();
+    this.drawAll();
+  }
+
+  registerHooks() {
+    this.hookIDs.renderApplication = Hooks.on("renderApplication", () => this.renderApplicationHook());
+    this.hookIDs.targetToken = Hooks.on("targetToken", () => this.targetTokenHook());
+  }
+
+  unregisterHooks() {
+    Hooks.off("renderApplication", this.hookIDs.renderApplication);
+    Hooks.off("targetToken", this.hookIDs.targetToken);
+
+    this.hookIDs.renderApplication = undefined;
+    this.hookIDs.targetToken = undefined;
+  }
+
+  clearAll() {
+    this.overlays.distanceTexts?.forEach(t => {t.destroy()});
+    this.overlays.turnOrderTexts?.forEach(t => {t.destroy()});
+    this.overlays.distanceTexts = [];
+    this.overlays.distanceOverlay?.destroy();
+    this.overlays.distanceOverlay = undefined;
+    this.overlays.pathOverlay?.destroy();
+    this.overlays.pathOverlay = undefined;
+    this.overlays.turnOrderTexts = [];
+    this.overlays.potentialTargetOverlay?.destroy();
+    this.overlays.potentialTargetOverlay = undefined;
+    this.overlays.wallsOverlay?.destroy();
+    this.overlays.wallsOverlay = undefined;
+
+    if (showDifficultTerrain) {
+      canvas.terrain.visible = false;
+    }
+  }
+
+  initializePersistentVariables() {
+    this.overlays.distanceTexts = [];
+    this.overlays.turnOrderTexts = [];
+
+    this.overlays.distanceOverlay = new PIXI.Graphics();
+    this.overlays.pathOverlay = new PIXI.Graphics();
+    this.overlays.potentialTargetOverlay = new PIXI.Graphics();
+    this.overlays.wallsOverlay = new PIXI.Graphics();
+  }
+
+  drawTurnOrder() {
+    const currentTokenId = this.currentToken.id;
+    if (game.combat === null) {
+      return;
+    }
+    const sortedCombatants = game.combat.combatants.sort(combatantComparator)
+    let seenCurrent = false;
+    let turnOrder = 0;
+    let i=0;
+    let j=0;
+
+    while(i < sortedCombatants.length) {
+      if (j++ > sortedCombatants.length * 3) {
+        throw "Got into an infinite loop in drawTurnOrder"
+      }
+
+      const combatant = sortedCombatants[i];
+      const combatantTokenId = combatant.token._id
+      // noinspection JSUnresolvedFunction
+      const combatantToken = canvas.tokens.get(combatantTokenId);
+      if (!seenCurrent && combatantTokenId === currentTokenId) {
+        seenCurrent = true;
+      }
+      if (!seenCurrent) {
+        sortedCombatants.push(sortedCombatants.shift()); // Move first element to last element
+      } else {
+        if (turnOrder > 0 && combatantToken.visible) {
+          const text = new PIXI.Text(turnOrder, turnOrderStyle);
+          text.position.x = combatantToken.x + combatantToken.hitArea.width / 2 - text.width / 2;
+          text.position.y = combatantToken.y + combatantToken.hitArea.height / 2 - text.height / 2;
+          this.overlays.turnOrderTexts.push(text);
+        }
+        turnOrder++
+        i++;
+      }
+    }
+
+    for (const text of this.overlays.turnOrderTexts) {
+      canvas.tokens.addChild(text);
+    }
+  }
+
+  drawCosts(movementCostMap, targetRangeMap) {
+    const rangeMap = buildRangeMap(targetRangeMap);
+    const idealTileMap = calculateIdealTileMap(movementCostMap, targetRangeMap, rangeMap);
+    if (targetRangeMap.size > 0 && idealTileMap.size === 0) {
+      ui.notifications.warn("No tiles are within movement range AND attack range")
+      return;
+    }
+
+    const tilesMovedPerAction = this.getSpeed() / FEET_PER_TILE;
+    this.overlays.distanceTexts = [];
+    this.overlays.pathOverlay.lineStyle(pathLineWidth, pathLineColor);
+
+    for (const tile of movementCostMap.values()) {
+      let drawTile = false;
+      if (targetRangeMap.size === 0 || idealTileMap.has(tile.key)) {
+        drawTile = true;
+      } else {
+        for (const idealTile of idealTileMap.values()) {
+          if (tile.upstreamOf(idealTile)) {
+            drawTile = true;
+            break;
+          }
+        }
+      }
+      if (drawTile) {
+        if (showNumericMovementCost) {
+          const label = roundNumericMovementCost ? Math.floor(tile.distance + FUDGE) : tile.distance;
+          const text = new PIXI.Text(label, movementCostStyle);
+          const pt = tile.pt;
+          text.position.x = pt.x;
+          text.position.y = pt.y;
+          this.overlays.distanceTexts.push(text);
+        }
+
+        if (showPathLines) {
+          let tileCenter = tile.centerPt;
+          if (tile.upstreams !== undefined) {
+            for (const upstream of tile.upstreams) {
+              let upstreamCenter = upstream.centerPt;
+              this.overlays.pathOverlay.moveTo(tileCenter.x, tileCenter.y);
+              this.overlays.pathOverlay.lineTo(upstreamCenter.x, upstreamCenter.y);
+            }
+          }
+        }
+
+        // Color tile based on number of actions to reach it
+        const colorIndex = Math.min(Math.ceil(Math.floor(tile.distance + FUDGE) / tilesMovedPerAction), colorByActions.length-1);
+        let color = colorByActions[colorIndex];
+        let cornerPt = tile.pt;
+        if (idealTileMap.has(tile.key)) {
+          this.overlays.distanceOverlay.lineStyle(highlightLineWidth, highlightLineColor);
+        } else {
+          this.overlays.distanceOverlay.lineStyle(0, 0);
+        }
+        this.overlays.distanceOverlay.beginFill(color, movementAlpha);
+        this.overlays.distanceOverlay.drawRect(cornerPt.x, cornerPt.y, canvas.grid.size, canvas.grid.size);
+        this.overlays.distanceOverlay.endFill();
+      }
+    }
+
+    canvas.drawings.addChild(this.overlays.distanceOverlay);
+    canvas.drawings.addChild(this.overlays.pathOverlay);
+
+    for (const text of this.overlays.distanceTexts) {
+      canvas.drawings.addChild(text);
+    }
+  }
+
+  drawWalls() {
+    this.overlays.wallsOverlay.lineStyle(wallLineWidth, wallLineColor);
+    for (const quadtree of canvas.walls.quadtree.nodes) {
+      for (const obj of quadtree.objects) {
+        const wall = obj.t;
+        if (wall.data.door || !wall.data.move) {
+          continue;
+        }
+        const c = wall.data.c;
+        this.overlays.wallsOverlay.moveTo(c[0], c[1]);
+        this.overlays.wallsOverlay.lineTo(c[2], c[3]);
+      }
+    }
+    canvas.drawings.addChild(this.overlays.wallsOverlay);
+  }
+}
+
 function getCurrentToken() {
   // noinspection JSUnresolvedVariable
   if (typeof(token) !== "undefined") {
@@ -126,99 +497,13 @@ function getCurrentToken() {
   }
 }
 
-function getSpeed() {
-  const actor = getCurrentToken() !== undefined ? getCurrentToken().actor : game.user.character;
-  const speedAttr = actor.data.data.attributes.speed;
-  let speed = speedAttr.total ?? 0;
-  // noinspection JSUnresolvedVariable
-  speedAttr.otherSpeeds.forEach(otherSpeed => {
-    if (otherSpeed.total > speed) {
-      speed = otherSpeed.total;
-    }
-  })
-  return speed;
-}
-
 function calculateGridDistance(pt1, pt2) {
   const dx = Math.abs(pt1.x - pt2.x)
   const dy = Math.abs(pt1.y - pt2.y);
   return Math.abs(dx - dy) + Math.floor(Math.min(dx, dy) * 3 / 2);
 }
 
-// Use Dijkstra's shortest path algorithm
-function calculateMovementCosts() {
-  const tilesPerAction = getSpeed() / FEET_PER_TILE;
-  const maxTiles = tilesPerAction * actionsToShow;
 
-  const currentToken = getCurrentToken();
-  const tokenTile = GridTile.fromPixels(currentToken.x, currentToken.y);
-  tokenTile.distance = 0;
-
-  // Keep a map of grid coordinate -> GridTile
-  const tileMap = new Map();
-  tileMap.set(tokenTile.key, tokenTile);
-
-  const toVisit = new Set();
-  toVisit.add(tokenTile);
-
-  while (toVisit.size > 0) {
-    let current = new GridTile(undefined, undefined);
-
-    for (const tile of toVisit) {
-      if (tile.distance < current.distance) {
-        current = tile;
-      }
-    }
-    if (current.distance === MAX_DIST) { // Stop if cheapest tile is unreachable
-      break;
-    }
-    toVisit.delete(current);
-    if (current.visited) {
-      console.log("BUG: Trying to visit a tile twice");
-      continue;
-    }
-    current.visited = true;
-
-    const neighborGridXYs = canvas.grid.grid.getNeighbors(current.gx, current.gy);
-    for (const neighborGridXY of neighborGridXYs) {
-      let neighbor = new GridTile(neighborGridXY[0], neighborGridXY[1]);
-      if (tileMap.has(neighbor.key)) {
-        neighbor = tileMap.get(neighbor.key);
-      } else {
-        tileMap.set(neighbor.key, neighbor);
-      }
-
-      if (neighbor.visited) {
-        continue;
-      }
-
-      const ray = new Ray(neighbor.centerPt, current.centerPt);
-      if (checkCollision(ray, {blockMovement: true, blockSenses: false, mode: 'any'})) {
-        // Blocked, do nothing
-        //console.log(`${neighbor.key} (${neighbor.centerPt.x}/${neighbor.centerPt.y}) is blocked from ${current.key} (${current.centerPt.x}/${current.centerPt.y})`);
-      } else {
-        let newDistance = current.distance + neighbor.cost;
-        if (current.isDiagonal(neighbor)) { // diagonals
-          newDistance += .5;
-        }
-
-        if (Math.floor(newDistance+FUDGE) > maxTiles) {
-          // Do nothing
-        } else if (Math.abs(neighbor.distance - newDistance) < FUDGE) {
-          neighbor.upstreams.add(current);
-        } else if (newDistance < neighbor.distance) {
-          neighbor.upstreams = new Set();
-          neighbor.upstreams.add(current);
-          neighbor.distance = newDistance;
-          toVisit.add(neighbor);
-        }
-      }
-    }
-  }
-
-  // Filter out any tiles which have distance 999 (unreachable)
-  return new Map([...tileMap].filter(kv => kv[1].distance !== MAX_DIST));
-}
 
 // Abstract this because IntelliJ complains that canvas.walls.checkCollision isn't accessible and we don't want to annotate it everywhere
 function checkCollision(ray, opts) {
@@ -268,15 +553,7 @@ function calculateTilesInRange(rangeInTiles, targetToken) {
   return tileSet;
 }
 
-function calculateTargetRangeMap() {
-  const targetMap = new Map();
-  const weaponRangeInTiles = weaponRange / FEET_PER_TILE;
 
-  for (const targetToken of game.user.targets) {
-    targetMap.set(targetToken.id, calculateTilesInRange(weaponRangeInTiles, targetToken));
-  }
-  return targetMap;
-}
 
 function buildRangeMap(targetMap) {
   const rangeMap = new Map();
@@ -313,44 +590,7 @@ function getCombatantTokenDisposition(combatantToken) {
   return combatantToken.data.disposition;
 }
 
-function drawPotentialTargets(movementCosts, targetMap) {
-  if (game.combat === null) {
-    return;
-  }
 
-  const tilesMovedPerAction = getSpeed() / FEET_PER_TILE;
-  const weaponRangeInTiles = weaponRange / FEET_PER_TILE;
-
-  for (const combatant of game.combat.combatants) {
-    const combatantToken = getCombatantToken(combatant);
-    if (getCombatantTokenDisposition(combatantToken) === -1) { // Hostile NPC
-      if (combatantToken.visible) {
-        let tilesInRange = calculateTilesInRange(weaponRangeInTiles, combatantToken);
-        let bestCost = MAX_DIST;
-
-        for (const tileInRange of tilesInRange) {
-          const costTile = movementCosts.get(tileInRange.key)
-          if (costTile === undefined) {
-            continue;
-          }
-          if (costTile.distance < bestCost) {
-            bestCost = costTile.distance;
-          }
-        }
-
-        const colorIndex = Math.min(Math.ceil(Math.floor(bestCost + FUDGE) / tilesMovedPerAction), colorByActions.length-1);
-        let color = colorByActions[colorIndex];
-        window.potentialTargetOverlay.lineStyle(potentialTargetLineWidth, color)
-        window.potentialTargetOverlay.drawCircle(
-          combatantToken.x + combatantToken.hitArea.width/2,
-          combatantToken.y + combatantToken.hitArea.height/2,
-          Math.pow(Math.pow(combatantToken.hitArea.width/2, 2) + Math.pow(combatantToken.hitArea.height/2, 2), .5)
-        );
-      }
-    }
-  }
-  canvas.drawings.addChild(window.potentialTargetOverlay);
-}
 
 // Copied straight from foundry.js (_sortCombatants)
 function combatantComparator(a, b) {
@@ -380,221 +620,8 @@ function checkTileToTokenVisibility(tile, token) {
   return false;
 }
 
-function drawTurnOrder() {
-  const currentToken = getCurrentToken();
-  const currentTokenId = currentToken.id;
-  if (game.combat === null) {
-    return;
-  }
-  const sortedCombatants = game.combat.combatants.sort(combatantComparator)
-  let seenCurrent = false;
-  let turnOrder = 0;
-  let i=0;
-  let j=0;
-
-  while(i < sortedCombatants.length) {
-    if (j++ > sortedCombatants.length * 3) {
-      throw "Got into an infinite loop in drawTurnOrder"
-    }
-
-    const combatant = sortedCombatants[i];
-    const combatantTokenId = combatant.token._id
-    // noinspection JSUnresolvedFunction
-    const combatantToken = canvas.tokens.get(combatantTokenId);
-    if (!seenCurrent && combatantTokenId === currentTokenId) {
-      seenCurrent = true;
-    }
-    if (!seenCurrent) {
-      sortedCombatants.push(sortedCombatants.shift()); // Move first element to last element
-    } else {
-      if (turnOrder > 0 && combatantToken.visible) {
-        const text = new PIXI.Text(turnOrder, turnOrderStyle);
-        text.position.x = combatantToken.x + combatantToken.hitArea.width / 2 - text.width / 2;
-        text.position.y = combatantToken.y + combatantToken.hitArea.height / 2 - text.height / 2;
-        window.turnOrderTexts.push(text);
-      }
-      turnOrder++
-      i++;
-    }
-  }
-
-  for (const text of window.turnOrderTexts) {
-    canvas.tokens.addChild(text);
-  }
+if (typeof (globalThis.movementPlanner) === "undefined") {
+  globalThis.movementPlanner = {MovementPlanner, instance: null};
 }
 
-function drawCosts(movementCostMap, targetRangeMap) {
-  const rangeMap = buildRangeMap(targetRangeMap);
-  const idealTileMap = calculateIdealTileMap(movementCostMap, targetRangeMap, rangeMap);
-  if (targetRangeMap.size > 0 && idealTileMap.size === 0) {
-    ui.notifications.warn("No tiles are within movement range AND attack range")
-    return;
-  }
-
-  const tilesMovedPerAction = getSpeed() / FEET_PER_TILE;
-  window.distanceTexts = [];
-  window.pathOverlay.lineStyle(pathLineWidth, pathLineColor);
-
-  for (const tile of movementCostMap.values()) {
-    let drawTile = false;
-    if (targetRangeMap.size === 0 || idealTileMap.has(tile.key)) {
-      drawTile = true;
-    } else {
-      for (const idealTile of idealTileMap.values()) {
-        if (tile.upstreamOf(idealTile)) {
-          drawTile = true;
-          break;
-        }
-      }
-    }
-    if (drawTile) {
-      if (showNumericMovementCost) {
-        const label = roundNumericMovementCost ? Math.floor(tile.distance + FUDGE) : tile.distance;
-        const text = new PIXI.Text(label, movementCostStyle);
-        const pt = tile.pt;
-        text.position.x = pt.x;
-        text.position.y = pt.y;
-        window.distanceTexts.push(text);
-      }
-
-      if (showPathLines) {
-        let tileCenter = tile.centerPt;
-        if (tile.upstreams !== undefined) {
-          for (const upstream of tile.upstreams) {
-            let upstreamCenter = upstream.centerPt;
-            window.pathOverlay.moveTo(tileCenter.x, tileCenter.y);
-            window.pathOverlay.lineTo(upstreamCenter.x, upstreamCenter.y);
-          }
-        }
-      }
-
-      // Color tile based on number of actions to reach it
-      const colorIndex = Math.min(Math.ceil(Math.floor(tile.distance + FUDGE) / tilesMovedPerAction), colorByActions.length-1);
-      let color = colorByActions[colorIndex];
-      let cornerPt = tile.pt;
-      if (idealTileMap.has(tile.key)) {
-        window.distanceOverlay.lineStyle(highlightLineWidth, highlightLineColor);
-      } else {
-        window.distanceOverlay.lineStyle(0, 0);
-      }
-      window.distanceOverlay.beginFill(color, movementAlpha);
-      window.distanceOverlay.drawRect(cornerPt.x, cornerPt.y, canvas.grid.size, canvas.grid.size);
-      window.distanceOverlay.endFill();
-    }
-  }
-
-  canvas.drawings.addChild(window.distanceOverlay);
-  canvas.drawings.addChild(window.pathOverlay);
-
-  for (const text of window.distanceTexts) {
-    canvas.drawings.addChild(text);
-  }
-}
-
-function drawWalls() {
-  window.wallsOverlay.lineStyle(wallLineWidth, wallLineColor);
-  for (const quadtree of canvas.walls.quadtree.nodes) {
-    for (const obj of quadtree.objects) {
-      const wall = obj.t;
-      if (wall.data.door || !wall.data.move) {
-        continue;
-      }
-      const c = wall.data.c;
-      window.wallsOverlay.moveTo(c[0], c[1]);
-      window.wallsOverlay.lineTo(c[2], c[3]);
-    }
-  }
-  canvas.drawings.addChild(window.wallsOverlay);
-}
-
-function clearAll() {
-  window.distanceTexts.forEach(t => {t.destroy()});
-  window.turnOrderTexts.forEach(t => {t.destroy()});
-  window.distanceTexts = [];
-  window.distanceOverlay.destroy();
-  window.distanceOverlay = undefined;
-  window.pathOverlay.destroy();
-  window.pathOverlay = undefined;
-  window.turnOrderTexts = [];
-  window.potentialTargetOverlay.destroy();
-  window.potentialTargetOverlay = undefined;
-  window.wallsOverlay.destroy();
-  window.wallsOverlay = undefined;
-
-  if (showDifficultTerrain) {
-    canvas.terrain.visible = false;
-  }
-}
-
-function initializePersistentVariables() {
-  window.distanceTexts = [];
-  window.turnOrderTexts = [];
-
-  window.distanceOverlay = new PIXI.Graphics();
-  window.pathOverlay = new PIXI.Graphics();
-  window.potentialTargetOverlay = new PIXI.Graphics();
-  window.wallsOverlay = new PIXI.Graphics();
-}
-
-function drawAll() {
-  const movementCosts = calculateMovementCosts();
-  const targetRangeMap = calculateTargetRangeMap();
-
-  initializePersistentVariables();
-  drawCosts(movementCosts, targetRangeMap);
-  if (game.user.targets.size === 0) {
-    if (showTurnOrder) {
-      drawTurnOrder();
-    }
-
-    if (showPotentialTargets) {
-      drawPotentialTargets(movementCosts);
-    }
-  }
-
-  if (showWalls) {
-    drawWalls();
-  }
-
-  if (showDifficultTerrain) {
-    canvas.terrain.visible = true;
-  }
-}
-
-function renderApplicationHook(...args) {
-  clearAll();
-  initializePersistentVariables();
-  drawAll();
-}
-
-function targetTokenHook(...args) {
-  clearAll();
-  initializePersistentVariables();
-  drawAll();
-}
-
-function registerHooks() {
-  window.movementPlannerRenderHookId = Hooks.on("renderApplication", renderApplicationHook);
-  window.movementPlannerTargetTokenHookId = Hooks.on("targetToken", targetTokenHook);
-}
-
-function unregisterHooks() {
-  Hooks.off("renderApplication", window.movementPlannerRenderHookId);
-  Hooks.off("targetToken", window.movementPlannerTargetTokenHookId);
-
-  window.movementPlannerRenderHookId = undefined;
-  window.movementPlannerTargetTokenHookId = undefined;
-  window.movementPlannerTestHook = undefined;
-}
-
-if (typeof(window.distanceOverlay) === "undefined") {
-  drawAll();
-  if (enableHooks) {
-    registerHooks();
-  }
-} else {
-  clearAll();
-  if (enableHooks) {
-    unregisterHooks();
-  }
-}
+globalThis.movementPlanner.MovementPlanner.toggle({weaponRange: WEAPON_RANGE});
