@@ -112,11 +112,12 @@ class MovementPlanner {
     this.hookIDs = {};
     this.currentToken = getCurrentToken();
     this.tokenTile = GridTile.fromPixels(this.currentToken.x, this.currentToken.y);
+    this.warned = false;
   }
 
   static toggle({weaponRange = 30}) {
     if (getCurrentToken() === undefined) {
-      console.log("Trying to toggle movement planner, but no current token is available; aborting");
+      ui.notifications.warn("Trying to toggle movement planner, but no current token is available; aborting");
       return;
     }
 
@@ -376,7 +377,10 @@ class MovementPlanner {
 
     while(i < sortedCombatants.length) {
       if (j++ > sortedCombatants.length * 3) {
-        console.log("Current token doesn't seem to be part of encounter; returning");
+        if (!this.warned) {
+          ui.notifications.warn("Current token doesn't seem to be part of encounter");
+          this.warned = true;
+        }
         return;
       }
 
